@@ -43,7 +43,13 @@
     soulPerKill: 1,
     retreatInvuln: 1.6,
     manualMul: 1.6,
-    slackPenalty: 0.55
+    slackPenalty: 0,          // 箭毯版本：打空不再是惩罚
+    landLife: 9.0,            // 插地箭存活 9 秒
+    remanCap: 24,             // 场上最多 24 支
+    remanDmgMul: 0.6,         // 被踩到时弹起的箭 = 原伤害 60%
+    remanHopsMax: 2,          // 每支最多触发两次
+    remanX: 0.075,            // 触发横向范围
+    remanD: 0.40              // 触发纵深范围
   };
 
   var TALENTS = [
@@ -92,6 +98,7 @@
       arrows: [], enemies: [], fx: [], pops: [], groundArrows: [], fires: [], snares: [],
       spawnT: 1.0, fireCd: 0.8, rainT: 9, snareT: 12, falconT: 5, houndT: 0,
       comboHits: 0, comboLast: 0,
+      remanArrows: 0, remanHits: 0, chainPeak: 0, chainNow: 0, groundPeak: 0,
       talents: {}, bought: {}, atk: CFG.atkBase, forks: {},
       hound: { x: 0.30, d: 0.0, target: null, bite: 0 },
       markBonus: 0,
@@ -164,7 +171,7 @@
     return { vx: vx, vy: vy, t: t };
   }
   function aimError(st) {
-    var base = Math.min(0.10, 0.012 + st.wave * 0.0016);
+    var base = Math.min(0.12, 0.025 + st.wave * 0.0016);
     if (has(st, "hawk")) base *= 0.45;
     return base;
   }
@@ -218,6 +225,14 @@
     st.souls += gain;
     if (st.kills % 6 === 0) st.wave++;
     st.pops.push({ t: 1.3, text: "+" + gain, x: e.x, d: e.d, h: 0.8, soul: true });
+    // 尸体上的箭落回地面，变成"已填装"
+    var dropN = 1 + (has(st, "multi") ? 1 : 0);
+    for (var dn = 0; dn < dropN; dn++) {
+      st.groundArrows.push({ x: Math.max(0.24, Math.min(1.0, e.x + (dn ? 0.03 : -0.03))), d: e.d + (dn ? 0.05 : -0.05), life: CFG.landLife, dmg: Math.max(1, st.atk), hops: 0, armed: 1 });
+      st.remanArrows++;
+    }
+    while (st.groundArrows.length > CFG.remanCap) st.groundArrows.shift();
+    st.groundPeak = Math.max(st.groundPeak, st.groundArrows.length);
     if (has(st, "explode") || has(st, "oilfire")) {
       var list = st.enemies.slice();
       for (var j = 0; j < list.length; j++) {
@@ -404,7 +419,12 @@
         continue;
       }
       if (ar.y <= 0 || ar.x > 1.06 || ar.life <= 0) {
-        if (ar.y <= 0 && ar.x < 1.02) st.groundArrows.push({ x: ar.x, d: ar.d, life: 3 });
+        if (ar.y <= 0 && ar.x < 1.02) {
+          st.groundArrows.push({ x: ar.x, d: ar.d, life: CFG.landLife, dmg: ar.dmg, hops: 0, armed: 1 });
+          if (st.groundArrows.length > CFG.remanCap) st.groundArrows.shift();
+          st.remanArrows++;
+          st.groundPeak = Math.max(st.groundPeak, st.groundArrows.length);
+        }
         st.arrows.splice(a, 1);
         if (!ar.area) {
           st.comboHits = 0;
@@ -414,6 +434,61 @@
         }
       }
     }
+
+    /* ---- 踏箭：插地的箭被踩到就自己开火 ---- */
+    var chainThisTick = 0;
+    for (var gi = 0; gi < st.groundArrows.length; gi++) {
+      var ga = st.groundArrows[gi];
+      if (!ga || ga.hops >= CFG.remanHopsMax) continue;
+      for (var ei2 = 0; ei2 < st.enemies.length; ei2++) {
+        var en3 = st.enemies[ei2];
+        if (Math.abs(en3.x - ga.x) < CFG.remanX && Math.abs(en3.d - ga.d) < CFG.remanD) {
+          // 邻接的箭一起点火（连锁）
+          for (var nb = 0; nb < st.groundArrows.length; nb++) {
+            var near2 = st.groundArrows[nb];
+            if (near2 && near2 !== ga && near2.hops < CFG.remanHopsMax &&
+                Math.abs(near2.x - ga.x) < 0.11 && Math.abs(near2.d - ga.d) < 0.32) {
+              near2.chain = 1;
+            }
+          }
+          ga.hops++;
+          st.remanHits++;
+          chainThisTick++;
+          var sv = solveVy(ga.x, CFG.bowH, en3.x, CFG.aimH);
+          st.arrows.push({
+            x: ga.x, y: CFG.bowH, d: ga.d,
+            vx: sv.vx, vy: sv.vy, vd: (en3.d - ga.d) / sv.t,
+            dmg: Math.max(1, Math.round((ga.dmg || st.atk) * CFG.remanDmgMul)),
+            life: 3, trail: [], hits: 0, pierce: false, area: true, fromGround: true
+          });
+          st.fx.push({ t: 0.35, kind: "spring", x: ga.x, d: ga.d });
+          break;
+        }
+      }
+    }
+    // 被邻接点着的箭，同一帧内补射
+    if (chainThisTick > 0) {
+      for (var cg = 0; cg < st.groundArrows.length; cg++) {
+        var cga = st.groundArrows[cg];
+        if (!cga || !cga.chain) continue;
+        cga.chain = 0;
+        if (cga.hops >= CFG.remanHopsMax) continue;
+        var tgt2 = null;
+        for (var ce = 0; ce < st.enemies.length; ce++) {
+          if (Math.abs(st.enemies[ce].x - cga.x) < CFG.remanX * 2.2) { tgt2 = st.enemies[ce]; break; }
+        }
+        if (!tgt2) continue;
+        cga.hops++;
+        st.remanHits++;
+        chainThisTick++;
+        var sv2 = solveVy(cga.x, CFG.bowH, tgt2.x, CFG.aimH);
+        st.arrows.push({ x: cga.x, y: CFG.bowH, d: cga.d, vx: sv2.vx, vy: sv2.vy, vd: (tgt2.d - cga.d) / sv2.t,
+          dmg: Math.max(1, Math.round((cga.dmg || st.atk) * CFG.remanDmgMul)), life: 3, trail: [], hits: 0, pierce: false, area: true, fromGround: true });
+        st.fx.push({ t: 0.35, kind: "spring", x: cga.x, d: cga.d });
+      }
+    }
+    st.chainNow = chainThisTick;
+    st.chainPeak = Math.max(st.chainPeak, chainThisTick);
 
     if (has(st, "combo") && st.t - st.comboLast > 3) st.comboHits = 0;
 
@@ -546,20 +621,6 @@
     // 箭 + 拖影
     for (i = 0; i < s.arrows.length; i++) this.drawArrow(g, s.arrows[i]);
 
-    // 地上插的箭
-    for (i = 0; i < s.groundArrows.length; i++) {
-      var ga = s.groundArrows[i];
-      var gp = proj(ga.x, ga.d, 0);
-      g.globalAlpha = Math.min(1, ga.life);
-      g.strokeStyle = "#d8c8a4";
-      g.lineWidth = 1.8;
-      g.beginPath();
-      g.moveTo(gp.x, gp.y);
-      g.lineTo(gp.x - 9 * gp.s, gp.y - 12 * gp.s);
-      g.stroke();
-      g.globalAlpha = 1;
-    }
-
     // 飘字
     for (i = 0; i < s.pops.length; i++) {
       var pop = s.pops[i];
@@ -571,6 +632,8 @@
       g.fillText(pop.text, pp.x, pp.y);
       g.globalAlpha = 1;
     }
+    // 箭毯（画在敌人之上，保证不被挡）
+    for (i = 0; i < s.groundArrows.length; i++) this.drawLatticeArrow(g, s.groundArrows[i], s);
     for (i = 0; i < s.fx.length; i++) this.drawFx(g, s.fx[i]);
 
     if (s.invuln > 0) {
@@ -623,7 +686,7 @@
     for (var t2 = 0; t2 < 3; t2++) {
       var tx = 110 + t2 * 220, ty = FLOOR_TOP - 74;
       var fg = g.createRadialGradient(tx, ty, 2, tx, ty, 30);
-      fg.addColorStop(0, "rgba(255,180,80,0.30)");
+      fg.addColorStop(0, "rgba(255,180,80,0.16)");
       fg.addColorStop(1, "rgba(255,140,50,0)");
       g.fillStyle = fg;
       g.beginPath(); g.arc(tx, ty, 30, 0, 6.283); g.fill();
@@ -699,7 +762,7 @@
     g.textAlign = "center";
     g.fillStyle = "rgba(255,255,255,0.55)";
     g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText(s.hp + " / " + s.maxHp, 150 + hpW / 2, 21);
+    g.fillText(Math.ceil(s.hp) + " / " + s.maxHp, 150 + hpW / 2, 21);
     g.textAlign = "left";
 
     g.textAlign = "right";
@@ -713,7 +776,10 @@
     g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
     g.fillText("自动瞄准射击中 · 点敌人可手动补一箭", W - 22, 58);
     g.fillStyle = "rgba(200,220,245,0.3)";
-    g.fillText("命中率 " + (s.shots ? Math.round(100 * (1 - s.misses / Math.max(1, s.shots * (B.has(s, "multi") ? 2 : 1)))) : 0) + "%", W - 18, 76);
+    if (s.groundArrows && s.groundArrows.length > 0) {
+      g.fillStyle = "rgba(255,205,130,0.9)";
+      g.fillText("插地 " + s.groundArrows.length + " 支 · 已填装", W - 18, 76);
+    }
   };
 
   Game.prototype.drawEnemy = function (g, e, s) {
@@ -835,6 +901,49 @@
     g.restore();
   };
 
+  Game.prototype.drawLatticeArrow = function (g, ga, s) {
+    var gp = proj(ga.x, ga.d, 0);
+    var spent = (ga.hops || 0) >= 2;
+    var a = Math.min(1, ga.life / 1.5) * (spent ? 0.4 : 1);
+    g.globalAlpha = a;
+    if (!spent) {
+      var pulse = 0.5 + 0.35 * Math.sin(s.t * 3.6 + ga.x * 14);
+      var glow = g.createRadialGradient(gp.x, gp.y - 2, 1, gp.x, gp.y - 2, 20 * gp.s);
+      glow.addColorStop(0, "rgba(255,220,150," + (0.5 * pulse) + ")");
+      glow.addColorStop(1, "rgba(255,170,80,0)");
+      g.fillStyle = glow;
+      g.beginPath(); g.ellipse(gp.x, gp.y - 2, 20 * gp.s, 9 * gp.s, 0, 0, 6.283); g.fill();
+      g.strokeStyle = "rgba(255,235,180," + (0.75 * pulse) + ")";
+      g.lineWidth = 1.8;
+      g.beginPath(); g.ellipse(gp.x, gp.y - 1, 13 * gp.s, 5.2 * gp.s, 0, 0, 6.283); g.stroke();
+      g.strokeStyle = "rgba(255,220,150," + (0.3 * pulse) + ")";
+      g.beginPath(); g.ellipse(gp.x, gp.y - 1, 7 * gp.s, 2.8 * gp.s, 0, 0, 6.283); g.stroke();
+    }
+    g.shadowColor = spent ? "transparent" : "rgba(255,230,160,0.85)";
+    g.shadowBlur = spent ? 0 : 8;
+    g.strokeStyle = spent ? "#6f5f4a" : "#fffaf0";
+    g.lineWidth = Math.max(3, 3.6 * gp.s);
+    g.beginPath();
+    g.moveTo(gp.x + 1, gp.y + 1);
+    g.lineTo(gp.x - 10 * gp.s, gp.y - 26 * gp.s);
+    g.stroke();
+    // 箭头（插在地里，露出的尾羽端）
+    g.fillStyle = spent ? "rgba(150,130,100,0.65)" : "#ff6a4a";
+    g.beginPath();
+    g.moveTo(gp.x - 10 * gp.s, gp.y - 26 * gp.s);
+    g.lineTo(gp.x - 17 * gp.s, gp.y - 31 * gp.s);
+    g.lineTo(gp.x - 7 * gp.s, gp.y - 30 * gp.s);
+    g.closePath(); g.fill();
+    g.fillStyle = spent ? "rgba(150,130,100,0.5)" : "#fff2d8";
+    g.beginPath();
+    g.moveTo(gp.x - 10 * gp.s, gp.y - 26 * gp.s);
+    g.lineTo(gp.x - 13 * gp.s, gp.y - 33 * gp.s);
+    g.lineTo(gp.x - 6 * gp.s, gp.y - 31 * gp.s);
+    g.closePath(); g.fill();
+    g.shadowBlur = 0;
+    g.globalAlpha = 1;
+  };
+
   Game.prototype.drawFx = function (g, fx) {
     if (fx.kind === "boom") {
       var p = proj(fx.x, fx.d, fx.h || 0.3);
@@ -849,6 +958,12 @@
       g.fillStyle = "rgba(255,190,140," + Math.min(1, fx.t) + ")";
       g.font = "800 17px -apple-system,Segoe UI,Roboto,sans-serif";
       g.fillText("被压退了 · 退回营地", W / 2, 290);
+    } else if (fx.kind === "spring") {
+      var sp = proj(fx.x, fx.d, 0.05);
+      var rr2 = (1 - fx.t / 0.35) * 22 * sp.s;
+      g.strokeStyle = "rgba(255,240,200," + Math.max(0, fx.t * 2.4) + ")";
+      g.lineWidth = 2;
+      g.beginPath(); g.arc(sp.x, sp.y - 4, rr2, 0, 6.283); g.stroke();
     } else if (fx.kind === "talent") {
       g.textAlign = "center";
       g.fillStyle = "rgba(160,230,190," + Math.min(1, fx.t) + ")";
