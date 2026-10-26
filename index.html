@@ -53,13 +53,31 @@
         id: "drill", nm: "自动镐", tip: "自动采 +2.5/秒",
         baseCost: 180, growth: 1.19, tier: 1,
         req: function (s) { return (s.bought.cart || 0) >= 3; },
+        reqText: "需 3 辆矿车",
         effect: function (s) { s.autoRate += 2.5; }
       },
       {
         id: "gloves", nm: "厚手套", tip: "敲击 +3（但自动 -10%）",
         baseCost: 420, growth: 1.22, tier: 1,
         req: function (s) { return (s.bought.pick || 0) >= 5; },
+        reqText: "需 5 把镐",
         effect: function (s) { s.tapPower += 3; s.autoRate *= 0.9; }
+      }
+    ];
+  }
+
+  /* 熔炉升级：货币是锭，不是矿 —— 第二条经济腿 */
+  function ingotNodes(st) {
+    return [
+      {
+        id: "blower", nm: "鼓风机", tip: "冶炼 -18% 时间", currency: "ingot",
+        baseCost: 3, growth: 1.85,
+        effect: function (s) { s.furnace.time = Math.max(1.2, s.furnace.time * 0.82); }
+      },
+      {
+        id: "chamber", nm: "大炉膛", tip: "每次投料 20 矿 → 2 锭", currency: "ingot",
+        baseCost: 6, growth: 2.0,
+        effect: function (s) { s.furnace.batch += 10; s.furnace.ratio = s.furnace.batch; }
       }
     ];
   }
@@ -69,6 +87,8 @@
       t: 0, ore: 0, total: 0,
       tapPower: CFG.tapBase, autoRate: 0,
       bought: {}, taps: 0,
+      ingot: 0, ingotTotal: 0,
+      furnace: { queue: 0, prog: 0, time: 4.0, batch: 10, ratio: 10, smelted: 0, heat: 0 },
       vein: null, veinT: 8, veinLife: 0,
       lastVein: 0, veins: 0,
       chips: [], pops: [],
@@ -86,16 +106,29 @@
     return Math.floor(node.baseCost * Math.pow(node.growth, n));
   }
 
+  function allNodes(st) {
+    return st.nodes.concat(ingotNodes(st));
+  }
+
+  function balanceOf(st, node) {
+    return node.currency === "ingot" ? st.ingot : st.ore;
+  }
+
   function canBuy(st, node) {
     if (node.req && !node.req(st)) return false;
-    return st.ore >= costOf(st, node);
+    return balanceOf(st, node) >= costOf(st, node);
   }
 
   function buy(st, id) {
     var node = null, i;
     for (i = 0; i < st.nodes.length; i++) if (st.nodes[i].id === id) node = st.nodes[i];
+    if (!node && st) {
+      var all = allNodes(st);
+      for (i = 0; i < all.length; i++) if (all[i].id === id) node = all[i];
+    }
     if (!node || !canBuy(st, node)) return false;
-    st.ore -= costOf(st, node);
+    if (node.currency === "ingot") st.ingot -= costOf(st, node);
+    else st.ore -= costOf(st, node);
     st.bought[id] = (st.bought[id] || 0) + 1;
     node.effect(st);
     return true;
@@ -126,12 +159,39 @@
     return { tap: v, bonus: 0 };
   }
 
+  /* 把一批矿投进炉子（拖拽的目标动作） */
+  function feed(st) {
+    var f = st.furnace;
+    if (st.ore < f.batch) return false;
+    if (f.queue >= 3) return false;          // 炉子最多排 3 批
+    st.ore -= f.batch;
+    f.queue++;
+    return true;
+  }
+
+  function stepFurnace(st, dt) {
+    var f = st.furnace;
+    f.heat = Math.max(0, f.heat - dt * 0.6);
+    if (f.queue <= 0) return;
+    f.prog += dt / f.time;
+    if (f.prog >= 1) {
+      f.prog = 0;
+      f.queue--;
+      st.ingot += 1;
+      st.ingotTotal += 1;
+      f.smelted++;
+      f.heat = 1;
+    }
+  }
+
   function step(st, dt) {
     st.t += dt;
 
     // 自动产出
     var auto = st.autoRate * dt;
     if (auto > 0) { st.ore += auto; st.total += auto; }
+
+    stepFurnace(st, dt);
 
     // 矿脉计时
     st.veinT -= dt;
@@ -174,12 +234,13 @@
 
   root.OreTap = {
     CFG: CFG, newState: newState, step: step, tap: tap,
-    costOf: costOf, canBuy: canBuy, buy: buy, settleOffline: settleOffline
+    costOf: costOf, canBuy: canBuy, buy: buy, settleOffline: settleOffline,
+    feed: feed, allNodes: allNodes, balanceOf: balanceOf, ingotNodes: ingotNodes
   };
 })(typeof window !== "undefined" ? window : globalThis);
 
 /* ==== src/game.js ==== */
-/* 敲矿 —— 渲染 / 存档 / 输入 */
+/* 敲矿 v2 —— 渲染（矿壁 + 熔炉 + 6 项升级） */
 (function (root) {
   "use strict";
   var M = root.OreTap, W = 400, H = 720;
@@ -207,18 +268,20 @@
     this.st = M.newState((Date.now() % 99991) + 7);
     this.offlineMsg = null;
     this.shake = 0;
-    this.hitT = 0;
+    this.drag = null;
+    this.hintFurnace = 0;
   }
 
-  /* 矿壁区域 */
-  Game.ROCK = { x: 24, y: 108, w: W - 48, h: 300 };
+  Game.ROCK = { x: 24, y: 108, w: W - 48, h: 282 };
+  Game.FURNACE = { x: 24, y: 398, w: W - 48, h: 46 };
 
   Game.prototype.save = function () {
     var s = this.st;
     try {
       root.localStorage.setItem("oretap_save", JSON.stringify({
-        ore: s.ore, total: s.total, tapPower: s.tapPower, autoRate: s.autoRate,
-        bought: s.bought, taps: s.taps, veins: s.veins, at: Date.now()
+        ore: s.ore, total: s.total, ingot: s.ingot, ingotTotal: s.ingotTotal,
+        tapPower: s.tapPower, autoRate: s.autoRate, bought: s.bought,
+        taps: s.taps, veins: s.veins, at: Date.now()
       }));
     } catch (e) {}
   };
@@ -228,11 +291,18 @@
     try { raw = root.localStorage.getItem("oretap_save"); } catch (e) {}
     if (!raw) return;
     try {
-      var d = JSON.parse(raw);
-      var s = this.st;
+      var d = JSON.parse(raw), s = this.st;
       s.ore = d.ore || 0; s.total = d.total || 0;
+      s.ingot = d.ingot || 0; s.ingotTotal = d.ingotTotal || 0;
       s.tapPower = d.tapPower || 1; s.autoRate = d.autoRate || 0;
       s.bought = d.bought || {}; s.taps = d.taps || 0; s.veins = d.veins || 0;
+      var all = M.allNodes(s), i, k, id;
+      for (id in s.bought) {
+        var n = s.bought[id];
+        for (i = 0; i < all.length; i++) {
+          if (all[i].id === id) for (k = 0; k < n; k++) all[i].effect(s);
+        }
+      }
       var hours = Math.max(0, (Date.now() - (d.at || Date.now())) / 3600000);
       if (hours > 0.01 && s.autoRate > 0) {
         var gain = M.settleOffline(s, hours);
@@ -245,15 +315,22 @@
     var r = Game.ROCK;
     if (x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) return null;
     var res = M.tap(this.st);
-    this.shake = res.bonus > 0 ? 1 : 0.4;
-    this.hitT = 0.12;
+    this.shake = res.bonus > 0 ? 1 : 0.45;
     return res;
+  };
+
+  Game.prototype.dropAt = function (x, y) {
+    var f = Game.FURNACE;
+    if (x < f.x - 20 || x > f.x + f.w + 20 || y < f.y - 30 || y > f.y + f.h + 30) return false;
+    var ok = M.feed(this.st);
+    if (ok) this.hintFurnace = 1;
+    return ok;
   };
 
   Game.prototype.update = function (dt) {
     M.step(this.st, dt);
     if (this.shake > 0) this.shake -= dt * 3;
-    if (this.hitT > 0) this.hitT -= dt;
+    if (this.hintFurnace > 0) this.hintFurnace -= dt;
   };
 
   Game.prototype.draw = function () {
@@ -271,23 +348,25 @@
     g.textAlign = "left"; g.textBaseline = "middle";
     g.fillStyle = "rgba(230,180,110,0.75)";
     g.font = "700 11px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("矿石 ORE", 20, 26);
+    g.fillText("矿石 ORE", 20, 24);
     g.fillStyle = "#fff2dc";
-    g.font = "800 42px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText(fmt(s.ore), 18, 60);
+    g.font = "800 38px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(fmt(s.ore), 18, 56);
     if (s.autoRate > 0) {
       g.fillStyle = "rgba(140,220,160,0.9)";
-      g.font = "700 13px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("+" + s.autoRate.toFixed(1) + " /s 自动", 20, 88);
-    } else {
-      g.fillStyle = "rgba(200,170,130,0.55)";
-      g.font = "600 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("点矿壁挖矿", 20, 88);
+      g.font = "700 12px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("+" + s.autoRate.toFixed(1) + "/s", 20, 82);
     }
     g.textAlign = "right";
-    g.fillStyle = "rgba(230,200,160,0.6)";
-    g.font = "700 12px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("每击 " + s.tapPower + " · 敲了 " + s.taps + " 下", W - 18, 88);
+    g.fillStyle = "rgba(200,220,255,0.7)";
+    g.font = "700 11px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("铁锭 INGOT", W - 18, 24);
+    g.fillStyle = "#dce9ff";
+    g.font = "800 26px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(fmt(s.ingot), W - 18, 52);
+    g.fillStyle = "rgba(190,210,235,0.5)";
+    g.font = "600 11px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("每击 +" + s.tapPower + " · 已敲 " + s.taps, W - 18, 76);
 
     /* 矿壁 */
     var r = Game.ROCK;
@@ -295,7 +374,6 @@
     g.save();
     g.translate(sh, sh * 0.4);
 
-    // 岩石本体
     var grd = g.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
     grd.addColorStop(0, "#7a6a58");
     grd.addColorStop(0.4, "#5c4e40");
@@ -312,36 +390,32 @@
     }
     g.closePath();
     g.fill();
-    // 暖色轮廓：让石头从背景里"立"起来
     g.strokeStyle = "rgba(255,196,120,0.45)";
     g.lineWidth = 2.5;
     g.stroke();
-    // 顶部受光
     var rim = g.createLinearGradient(0, r.y, 0, r.y + 60);
     rim.addColorStop(0, "rgba(255,220,170,0.16)");
     rim.addColorStop(1, "rgba(255,220,170,0)");
     g.fillStyle = rim;
     g.fill();
 
-    // 矿脉纹路
     g.strokeStyle = "rgba(255,200,110,0.18)";
     g.lineWidth = 1.2;
     for (var v = 0; v < 7; v++) {
-      var sy = r.y + 40 + hash(v * 9.1) * (r.h - 80);
+      var sy = r.y + 34 + hash(v * 9.1) * (r.h - 68);
       g.beginPath();
       g.moveTo(r.x + 30, sy);
-      g.bezierCurveTo(r.x + r.w * 0.35, sy - 18, r.x + r.w * 0.6, sy + 22, r.x + r.w - 30, sy - 6);
+      g.bezierCurveTo(r.x + r.w * 0.35, sy - 16, r.x + r.w * 0.6, sy + 20, r.x + r.w - 30, sy - 6);
       g.stroke();
     }
 
-    // 敲痕：随敲击次数增长
     var cracks = Math.min(24, Math.floor(s.taps / 6));
-    g.strokeStyle = "rgba(20,14,10,0.65)";
+    g.strokeStyle = "rgba(22,15,10,0.6)";
     g.lineWidth = 1.6;
     for (var c = 0; c < cracks; c++) {
       var cx = r.x + r.w * (0.15 + hash(c * 5.3) * 0.7);
       var cy = r.y + r.h * (0.15 + hash(c * 7.7) * 0.7);
-      var len = 10 + hash(c * 2.3) * 26;
+      var len = 10 + hash(c * 2.3) * 24;
       g.beginPath();
       g.moveTo(cx, cy);
       g.lineTo(cx + Math.cos(c) * len, cy + Math.sin(c * 1.7) * len);
@@ -349,22 +423,17 @@
       g.stroke();
     }
 
-    // 新手引导：还没敲够时给一个呼吸的提示圈
-    {
-      var hcx = r.x + r.w / 2, hcy = r.y + r.h / 2;
-      var pulse2 = 0.55 + Math.sin(s.t * 3.5) * 0.3;
-      g.strokeStyle = "rgba(255,214,140," + pulse2 + ")";
-      g.lineWidth = 2.5;
-      g.beginPath(); g.arc(hcx, hcy, 52 + Math.sin(s.t * 2.2) * 7, 0, 6.283); g.stroke();
-      if (s.taps < 6) {
-        g.fillStyle = "rgba(255,236,200," + (0.75 + Math.sin(s.t * 3.5) * 0.2) + ")";
-        g.font = "800 15px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.textAlign = "center";
-        g.fillText("点这里挖矿", hcx, hcy - 2);
-      }
+    var hcx = r.x + r.w / 2, hcy = r.y + r.h / 2;
+    g.strokeStyle = "rgba(255,214,140," + (0.32 + Math.sin(s.t * 2.2) * 0.16) + ")";
+    g.lineWidth = 2.5;
+    g.beginPath(); g.arc(hcx, hcy, 52 + Math.sin(s.t * 2.2) * 7, 0, 6.283); g.stroke();
+    if (s.taps < 6) {
+      g.fillStyle = "rgba(255,236,200,0.92)";
+      g.font = "800 15px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.textAlign = "center";
+      g.fillText("点这里挖矿", hcx, hcy);
     }
 
-    // 矿脉（可点的大奖励）
     if (s.vein) {
       var vx = r.x + r.w * s.vein.x, vy = r.y + r.h * s.vein.y;
       var pulse = 0.6 + Math.sin(s.t * 8) * 0.4;
@@ -384,21 +453,18 @@
       g.closePath(); g.fill();
     }
 
-    // 碎屑
     for (var ch = 0; ch < s.chips.length; ch++) {
       var chip = s.chips[ch];
       g.globalAlpha = Math.min(1, chip.life * 2);
       g.fillStyle = "#c79a5e";
-      var chx = r.x + r.w * chip.x, chy = r.y + r.h * chip.y;
       g.save();
-      g.translate(chx, chy);
+      g.translate(r.x + r.w * chip.x, r.y + r.h * chip.y);
       g.rotate(chip.spin * (1 - chip.life));
       g.fillRect(-2.5, -2.5, 5, 5);
       g.restore();
       g.globalAlpha = 1;
     }
 
-    // 飘字
     for (var p = 0; p < s.pops.length; p++) {
       var pop = s.pops[p];
       g.globalAlpha = Math.min(1, pop.t);
@@ -410,105 +476,197 @@
     }
     g.restore();
 
-    /* 矿脉倒计时条 */
-    if (!s.vein) {
-      var pct = 1 - Math.max(0, s.veinT) / M.CFG.veinEveryMax;
-      g.fillStyle = "rgba(255,255,255,0.06)";
-      rr(g, 24, 420, W - 48, 8, 4); g.fill();
-      g.fillStyle = "rgba(255,190,90,0.45)";
-      rr(g, 24, 420, (W - 48) * Math.max(0, Math.min(1, pct)), 8, 4); g.fill();
-      g.textAlign = "center";
-      g.fillStyle = "rgba(230,190,130,0.45)";
+    /* ===== 熔炉 ===== */
+    var f = Game.FURNACE, fz = s.furnace;
+    var near = !!this.drag && this.drag.x > f.x - 24 && this.drag.x < f.x + f.w + 24 &&
+               this.drag.y > f.y - 34 && this.drag.y < f.y + f.h + 34;
+    rr(g, f.x, f.y, f.w, f.h, 12);
+    var fg = g.createLinearGradient(f.x, f.y, f.x, f.y + f.h);
+    fg.addColorStop(0, near ? "rgba(255,140,60,0.5)" : "rgba(70,50,40,0.55)");
+    fg.addColorStop(1, "rgba(30,20,16,0.88)");
+    g.fillStyle = fg;
+    g.fill();
+    g.strokeStyle = near ? "rgba(255,200,120,0.95)" : "rgba(255,170,90,0.35)";
+    g.lineWidth = near ? 2.4 : 1.4;
+    rr(g, f.x, f.y, f.w, f.h, 12);
+    g.stroke();
+
+    var heat = 0.3 + fz.heat * 0.7 + (fz.queue > 0 ? 0.2 : 0);
+    var fireGlow = g.createRadialGradient(f.x + 42, f.y + f.h / 2, 4, f.x + 42, f.y + f.h / 2, 44);
+    fireGlow.addColorStop(0, "rgba(255,160,60," + (0.55 * heat) + ")");
+    fireGlow.addColorStop(1, "rgba(255,120,40,0)");
+    g.fillStyle = fireGlow;
+    g.beginPath(); g.arc(f.x + 42, f.y + f.h / 2, 44, 0, 6.283); g.fill();
+
+    g.fillStyle = "rgba(18,10,6,0.92)";
+    rr(g, f.x + 22, f.y + 10, 40, f.h - 20, 8); g.fill();
+    var fillH = (f.h - 22) * Math.min(1, fz.prog);
+    g.fillStyle = "rgba(255," + Math.round(120 + heat * 110) + ",60,0.9)";
+    rr(g, f.x + 25, f.y + f.h - 12 - fillH, 34, Math.max(2, fillH), 5);
+    g.fill();
+
+    // 炉口进度环
+    var mcx = f.x + 42, mcy = f.y + f.h / 2;
+    g.strokeStyle = "rgba(255,180,90,0.18)";
+    g.lineWidth = 3;
+    g.beginPath(); g.arc(mcx, mcy, 26, 0, 6.283); g.stroke();
+    if (fz.queue > 0) {
+      g.strokeStyle = "rgba(255,205,110,0.95)";
+      g.lineWidth = 3;
+      g.beginPath();
+      g.arc(mcx, mcy, 26, -1.5708, -1.5708 + 6.283 * Math.min(1, fz.prog));
+      g.stroke();
+    }
+    // 排队槽位（3 格）
+    for (var q = 0; q < 3; q++) {
+      var qx = f.x + 84 + q * 14;
+      rr(g, qx, f.y + 31, 12, 10, 2);
+      g.fillStyle = q < fz.queue ? "rgba(255,190,100,0.95)" : "rgba(255,255,255,0.12)";
+      g.fill();
+    }
+
+    g.textAlign = "left";
+    g.fillStyle = "rgba(255,228,195,0.95)";
+    g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("熔炉", f.x + 76, f.y + 14);
+    g.fillStyle = near ? "rgba(255,210,150,0.95)" : "rgba(230,200,170,0.6)";
+    g.font = "600 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(near ? "松手投料！" : "把矿石拖进来（" + fz.batch + " 矿 → 1 锭）", f.x + 76, f.y + 31);
+
+    g.textAlign = "right";
+    if (fz.queue > 0) {
+      g.fillStyle = "rgba(255,180,100,0.95)";
+      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("冶炼 " + Math.round(fz.prog * 100) + "%", f.x + f.w - 14, f.y + 18);
+      g.fillStyle = "rgba(220,190,160,0.55)";
       g.font = "600 10px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("下一处矿脉 " + Math.ceil(Math.max(0, s.veinT)) + "s（出现后 4.5 秒内点到就是大钱）", W / 2, 440);
+      g.fillText("排队 " + (fz.queue - 1), f.x + f.w - 14, f.y + 32);
     } else {
+      g.fillStyle = "rgba(200,170,140,0.5)";
+      g.font = "600 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("空闲", f.x + f.w - 14, f.y + 24);
+    }
+
+    /* 首次提示：告诉玩家"拖"这个动作 */
+    if (s.ingotTotal === 0 && s.furnace.smelted === 0 && !this.drag) {
       g.textAlign = "center";
-      g.fillStyle = "rgba(255,214,120,0.95)";
-      g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("矿脉！快点它（还剩 " + Math.max(0, s.veinLife).toFixed(1) + "s）", W / 2, 432);
+      g.fillStyle = "rgba(255,220,170,0.55 + Math.sin(s.t * 2.6) * 0.2)";
+      g.font = "700 11px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("↑ 按住矿石，往下拖进炉子 ↑", W / 2, Game.ROCK.y + Game.ROCK.h + 10);
+    }
+
+    /* 拖拽矿块 */
+    if (this.drag) {
+      g.save();
+      g.translate(this.drag.x, this.drag.y);
+      g.rotate(Math.sin(s.t * 6) * 0.12);
+      g.fillStyle = "#a8834f";
+      rr(g, -14, -12, 28, 24, 5); g.fill();
+      g.strokeStyle = "rgba(255,225,170,0.8)"; g.lineWidth = 1.2;
+      rr(g, -14, -12, 28, 24, 5); g.stroke();
+      g.fillStyle = "#2a1d10";
+      g.font = "800 11px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(s.furnace.batch, 0, 0);
+      g.restore();
     }
 
     /* 购买区 */
-    g.textAlign = "left";
-    g.fillStyle = "rgba(255,200,130,0.8)";
-    g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("用矿升级", 20, 470);
+    g.textBaseline = "middle";
+    var all = M.allNodes(s);
+    var cards = Game.cardRects(all.length);
 
-    var cards = Game.cardRects();
+    g.textAlign = "left";
+    g.fillStyle = "rgba(255,200,130,0.85)";
+    g.font = "800 11px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("矿石升级", 22, 458);
     for (var ci = 0; ci < cards.length; ci++) {
-      var card = cards[ci];
-      var node = s.nodes[ci];
+      var card = cards[ci], node = all[ci];
       if (!node) continue;
+      if (ci === 4) {   // 锭组的分隔与标题
+        g.strokeStyle = "rgba(150,190,255,0.14)";
+        g.lineWidth = 1;
+        g.beginPath(); g.moveTo(22, card.y - 16); g.lineTo(W - 22, card.y - 16); g.stroke();
+        g.textAlign = "left";
+        g.fillStyle = "rgba(180,210,250,0.85)";
+        g.font = "800 11px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText("铁锭升级（熔炉烧出来的）", 22, card.y - 6);
+      }
       var owned = s.bought[node.id] || 0;
       var cost = M.costOf(s, node);
       var locked = node.req && !node.req(s);
-      var can = !locked && s.ore >= cost;
+      var can = !locked && M.balanceOf(s, node) >= cost;
+      var isIngot = node.currency === "ingot";
 
-      rr(g, card.x, card.y, card.w, card.h, 12);
-      g.fillStyle = can ? "rgba(210,150,60,0.22)" : "rgba(255,255,255,0.04)";
+      rr(g, card.x, card.y, card.w, card.h, 10);
+      g.fillStyle = can ? (isIngot ? "rgba(110,150,220,0.24)" : "rgba(210,150,60,0.22)") : "rgba(255,255,255,0.035)";
       g.fill();
-      g.strokeStyle = can ? "rgba(255,200,110,0.65)" : "rgba(200,160,110,0.16)";
+      g.strokeStyle = can ? (isIngot ? "rgba(150,190,255,0.6)" : "rgba(255,200,110,0.65)") : "rgba(200,160,110,0.14)";
       g.lineWidth = 1.2;
-      rr(g, card.x, card.y, card.w, card.h, 12);
+      rr(g, card.x, card.y, card.w, card.h, 10);
       g.stroke();
 
       g.textAlign = "left";
-      g.fillStyle = locked ? "rgba(200,180,160,0.45)" : (can ? "#fff0d8" : "rgba(230,210,190,0.7)");
-      g.font = "800 14px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText(node.nm, card.x + 14, card.y + 22);
+      g.fillStyle = locked ? "rgba(200,180,160,0.45)" : (can ? "#fff4e2" : "rgba(230,210,190,0.72)");
+      g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(node.nm, card.x + 11, card.y + 16);
       if (owned > 0) {
-        g.fillStyle = "rgba(255,200,120,0.75)";
-        g.font = "800 11px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText("已拥有 " + owned, card.x + 14 + g.measureText(node.nm).width + 46, card.y + 22);
+        g.fillStyle = "rgba(255,200,120,0.7)";
+        g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText("×" + owned, card.x + 11 + g.measureText(node.nm).width + 30, card.y + 16);
       }
-      g.fillStyle = "rgba(210,180,150,0.55)";
-      g.font = "600 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText(locked ? "需要先买 3 辆矿车" : node.tip, card.x + 14, card.y + 42);
+      g.fillStyle = "rgba(210,185,160,0.55)";
+      g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(node.tip, card.x + 11, card.y + 32);
 
       g.textAlign = "right";
-      g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
       if (locked) {
-        g.fillStyle = "rgba(200,180,160,0.35)";
-        g.fillText("锁定", card.x + card.w - 14, card.y + 26);
-      } else if (can) {
-        g.fillStyle = "#ffd24a";
-        g.fillText(cost + " 矿", card.x + card.w - 14, card.y + 20);
-        g.fillStyle = "rgba(255,214,120,0.75)";
-        g.font = "700 10px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText("可购买", card.x + card.w - 14, card.y + 36);
+        g.fillStyle = "rgba(200,180,160,0.4)";
+        g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText(node.reqText || "锁定", card.x + card.w - 11, card.y + 22);
+      }
+      else if (can) {
+        g.fillStyle = isIngot ? "#a8c8ff" : "#ffd24a";
+        g.fillText(cost + (isIngot ? " 锭" : " 矿"), card.x + card.w - 11, card.y + 15);
+        g.fillStyle = "rgba(255,255,255,0.5)";
+        g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText("可购买", card.x + card.w - 11, card.y + 28);
       } else {
         g.fillStyle = "rgba(220,200,180,0.4)";
-        g.fillText(cost + " 矿", card.x + card.w - 14, card.y + 20);
-        g.fillStyle = "rgba(255,140,120,0.65)";
-        g.font = "700 10px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText("还差 " + Math.ceil(cost - s.ore), card.x + card.w - 14, card.y + 36);
+        g.fillText(cost + (isIngot ? " 锭" : " 矿"), card.x + card.w - 11, card.y + 15);
+        g.fillStyle = "rgba(255,140,120,0.6)";
+        g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText("还差 " + Math.ceil(cost - M.balanceOf(s, node)), card.x + card.w - 11, card.y + 28);
       }
     }
 
-    /* 离线弹窗 */
     if (this.offlineMsg) {
       var m = this.offlineMsg;
       g.fillStyle = "rgba(6,4,3,0.9)";
       g.fillRect(0, 0, W, H);
       g.textAlign = "center";
       g.fillStyle = "#ffd24a";
-      g.font = "800 22px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("矿车替你干了 " + m.hours.toFixed(1) + " 小时", W / 2, H / 2 - 54);
+      g.font = "800 21px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("矿车替你干了 " + m.hours.toFixed(1) + " 小时", W / 2, H / 2 - 52);
       g.fillStyle = "#fff2dc";
-      g.font = "800 32px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.font = "800 30px -apple-system,Segoe UI,Roboto,sans-serif";
       g.fillText("+" + fmt(m.gain) + " 矿石", W / 2, H / 2 - 6);
-      g.fillStyle = "rgba(230,200,170,0.6)";
-      g.font = "600 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("离线效率 50%，最多 8 小时", W / 2, H / 2 + 28);
       g.fillStyle = "rgba(255,255,255,0.45)";
       g.font = "600 11px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("点一下继续", W / 2, H / 2 + 70);
+      g.fillText("点一下继续", W / 2, H / 2 + 40);
     }
   };
 
-  Game.cardRects = function () {
-    var out = [];
-    for (var i = 0; i < 4; i++) out.push({ i: i, x: 18, y: 484 + i * 56, w: W - 36, h: 50 });
+  /* 卡片布局：矿升级 2×2，锭升级 1 行 2 个 */
+  Game.cardRects = function (n) {
+    var out = [], w = (W - 44 - 8) / 2, x0 = 22, y0 = 470, h = 46;
+    for (var i = 0; i < 4; i++) {
+      out.push({ i: i, x: x0 + (i % 2) * (w + 8), y: y0 + Math.floor(i / 2) * (h + 6), w: w, h: h });
+    }
+    for (var j = 4; j < (n || 6); j++) {
+      out.push({ i: j, x: x0 + ((j - 4) % 2) * (w + 8), y: y0 + 2 * (h + 6) + 10, w: w, h: h });
+    }
     return out;
   };
 
@@ -516,12 +674,13 @@
 })(typeof window !== "undefined" ? window : globalThis);
 
 /* ==== src/main.js ==== */
-/* 敲矿 —— 启动 / 输入 */
+/* 敲矿 v2 —— 启动 / 输入（点矿 + 拖矿进炉） */
 (function (root) {
   "use strict";
   var G = root.OreGame, M = root.OreTap, W = G.W, H = G.H;
 
   var game = null, last = 0, saveAcc = 0;
+  var down = null, dragging = false;
 
   function boot() {
     var canvas = root.document.getElementById("game");
@@ -530,6 +689,9 @@
     fit(canvas);
     root.addEventListener("resize", function () { fit(canvas); });
     canvas.addEventListener("pointerdown", onDown);
+    root.addEventListener("pointermove", onMove);
+    root.addEventListener("pointerup", onUp);
+    root.addEventListener("pointercancel", onUp);
     root.addEventListener("visibilitychange", function () { if (game) game.save(); });
     last = Date.now();
     loop();
@@ -555,16 +717,46 @@
     var p = toLocal(e);
     if (game.offlineMsg) { game.offlineMsg = null; return; }
 
-    var cards = G.Game.cardRects();
+    // 升级卡：点一下就买
+    var all = M.allNodes(game.st);
+    var cards = G.Game.cardRects(all.length);
     for (var i = 0; i < cards.length; i++) {
       var c = cards[i];
       if (p.x >= c.x && p.x <= c.x + c.w && p.y >= c.y && p.y <= c.y + c.h) {
-        var node = game.st.nodes[i];
-        if (node) M.buy(game.st, node.id);
+        if (all[i]) M.buy(game.st, all[i].id);
         return;
       }
     }
-    game.tapAt(p.x, p.y);
+
+    down = p;
+    dragging = false;
+  }
+
+  function onMove(e) {
+    if (!down) return;
+    var p = toLocal(e);
+    if (!dragging) {
+      var dx = p.x - down.x, dy = p.y - down.y;
+      if (dx * dx + dy * dy > 196) {        // 移动超过 14px 算拖拽
+        dragging = true;
+        game.drag = { x: p.x, y: p.y };
+      }
+    } else {
+      game.drag = { x: p.x, y: p.y };
+    }
+  }
+
+  function onUp(e) {
+    if (!down) return;
+    var p = toLocal(e);
+    if (dragging) {
+      game.dropAt(p.x, p.y);
+      game.drag = null;
+    } else {
+      game.tapAt(p.x, p.y);
+    }
+    down = null;
+    dragging = false;
   }
 
   function loop() {
@@ -586,15 +778,17 @@
       game.draw();
       return this.info();
     },
-    tap: function () { return game.tapAt(W / 2, 260); },
+    tap: function () { return game.tapAt(W / 2, 240); },
+    feed: function () { return M.feed(game.st); },
     buy: function (id) { return M.buy(game.st, id); },
     info: function () {
-      var s = game.st;
+      var s = game.st, all = M.allNodes(s);
       return {
-        ore: Math.round(s.ore * 10) / 10, total: Math.round(s.total),
+        ore: Math.round(s.ore * 10) / 10, ingot: s.ingot, total: Math.round(s.total),
         tapPower: s.tapPower, autoRate: Math.round(s.autoRate * 10) / 10,
         taps: s.taps, veins: s.veins, bought: s.bought,
-        costs: s.nodes.map(function (n) { return M.costOf(s, n); }),
+        furnace: { queue: s.furnace.queue, prog: Math.round(s.furnace.prog * 100), time: s.furnace.time, batch: s.furnace.batch, smelted: s.furnace.smelted },
+        nodes: all.map(function (n) { return { id: n.id, cost: M.costOf(s, n), can: M.canBuy(s, n), cur: n.currency || "ore" }; }),
         vein: !!s.vein
       };
     }
