@@ -21,38 +21,40 @@
 <div id="rotate">请横过手机 ⟳</div>
 <script>
 /* ==== src/battle.js ==== */
-/* 《敲矿·弓》v11 —— 横版侧视（DNF 那种玩家视角）+ 真物理弹道
-   世界坐标：x 横向 0..1（左→右），d 走位纵深 -1..1（屏幕上下偏移，像 DNF 走位），h 离地高度
-   - 弓箭手在左侧，敌人从右侧走进来
-   - 点哪里就往哪里射：箭按固定初速 + 重力走抛物线，落点在射出时就定死 → 敌人会走位 → 会打空
-   - 敌人走近后咬人 */
+/* 《敲矿·弓》v13
+   ① 箭从弓的位置射出（起点修正）
+   ② 自动瞄准（带提前量）+ 自动射击 = 默认行为，玩家只需指挥/点杀优先目标
+   ③ 天赋改成树：分先后解锁，有连线 */
 (function (root) {
   "use strict";
 
   var CFG = {
-    spawnEvery: 2.3,
-    maxEnemies: 5,
+    spawnEvery: 2.2,
+    maxEnemies: 4,
     archerX: 0.19,
     archerD: 0.15,
-    fireEvery: 0.75,
+    bowH: 0.17,          // 弓的高度（世界单位）—— 箭必须从这里出
+    aimH: 0.24,          // 瞄准高度（敌人胸口）
+    autoEvery: 1.15,     // 自动射击间隔
     v0: 0.78,
     gravity: 6.0,
     atkBase: 1,
-    hpBase: 10,
-    hitR: 0.042,
+    hpBase: 12,
+    hitR: 0.045,
     soulPerKill: 1,
     retreatInvuln: 1.6
   };
 
+  /* 树：tier 决定上下层，parent 决定连线与解锁顺序 */
   var TALENTS = [
-    { id: "atk",    nm: "臂力 +1",  cost: 4,   desc: "每支箭伤害 +1（可反复点）", req: [], repeat: true },
-    { id: "multi",  nm: "多重箭",   cost: 8,   desc: "一次射 2 支，上下分开", req: [] },
-    { id: "pierce", nm: "穿透箭",   cost: 16,  desc: "箭穿过敌人继续飞，最多穿 3 个", req: ["multi"] },
-    { id: "auto",   nm: "自动射击", cost: 26,  desc: "挂机：自动朝最近的敌人射", req: ["atk"] },
-    { id: "explode",nm: "爆炸箭",   cost: 45,  desc: "命中点炸开，周围敌人吃 60% 伤害", req: ["pierce"] },
-    { id: "combo",  nm: "连击",     cost: 65,  desc: "连中 3 次后伤害翻倍，打空归零", req: ["auto"] },
-    { id: "rain",   nm: "箭雨",     cost: 120, desc: "每 9 秒朝一片区域落 5 支箭", req: ["explode"] },
-    { id: "archer2",nm: "第二弓手", cost: 190, desc: "再上一个弓手，独立开火", req: ["rain"] }
+    { id: "atk",    nm: "臂力",     tier: 0, cost: 4,   desc: "每支箭伤害 +1（可叠加）", req: [], repeat: true },
+    { id: "multi",  nm: "多重箭",   tier: 1, cost: 10,  desc: "一次射 2 支，上下分开", req: ["atk"] },
+    { id: "rapid",  nm: "快射",     tier: 1, cost: 12,  desc: "自动射击间隔 -35%", req: ["atk"] },
+    { id: "pierce", nm: "穿透箭",   tier: 2, cost: 22,  desc: "箭穿过敌人继续飞，最多穿 3 个", req: ["multi"] },
+    { id: "combo",  nm: "连击",     tier: 2, cost: 26,  desc: "连中 3 次后伤害翻倍，打空归零", req: ["rapid"] },
+    { id: "explode",nm: "爆炸箭",   tier: 3, cost: 50,  desc: "命中点炸开，周围吃 60% 伤害", req: ["pierce"] },
+    { id: "rain",   nm: "箭雨",     tier: 4, cost: 110, desc: "每 9 秒朝一片区域落 5 支箭", req: ["explode"] },
+    { id: "archer2",nm: "第二弓手", tier: 5, cost: 180, desc: "再上一个弓手，独立开火", req: ["rain"] }
   ];
 
   function newState(seed) {
@@ -60,7 +62,7 @@
       t: 0, souls: 0, wave: 1, kills: 0, retreats: 0, misses: 0, shots: 0,
       hp: CFG.hpBase, maxHp: CFG.hpBase, invuln: 0,
       arrows: [], enemies: [], fx: [], pops: [], groundArrows: [],
-      spawnT: 1.0, fireCd: 0, rainT: 9,
+      spawnT: 1.0, fireCd: 0.8, rainT: 9,
       comboHits: 0, comboLast: 0,
       talents: {}, bought: {}, atk: CFG.atkBase,
       rand: (function (s0) {
@@ -102,16 +104,20 @@
     });
   }
 
-  /* 真弹道：落点在出手时定死（vx 固定，vy 由落点反解），飞行中不再修正 */
-  function fireAtPoint(st, tx, td, fromX, fromD, dmgMul) {
-    var sx = (fromX === undefined) ? CFG.archerX + 0.035 : fromX;
-    var sd = (fromD === undefined) ? CFG.archerD : fromD;
-    var sy = 0.52;
-    var dx = Math.max(0.03, tx - sx);
+  /* 给定 vx，解出能落在 (tx, ty) 的 vy（这就是"瞄准"，飞行中不再修正） */
+  function solveVy(sx, sy, tx, ty, gravity) {
     var vx = CFG.v0 * 0.92;
-    var tt = dx / vx;
-    var aimH = 0.34;
-    var vy = ((aimH - sy) + 0.5 * CFG.gravity * tt * tt) / tt;
+    var dx = Math.max(0.03, tx - sx);
+    var t = dx / vx;
+    var vy = ((ty - sy) + 0.5 * gravity * t * t) / t;
+    return { vx: vx, vy: vy, t: t };
+  }
+
+  function fireAtPoint(st, tx, td, fromX, fromD, dmgMul) {
+    var sx = (fromX === undefined) ? CFG.archerX + 0.022 : fromX;
+    var sd = (fromD === undefined) ? CFG.archerD : fromD;
+    var sy = CFG.bowH;
+    var s = solveVy(sx, sy, tx, CFG.aimH, CFG.gravity);
 
     var dmg = Math.round(st.atk * (dmgMul || 1));
     if (has(st, "combo") && st.comboHits >= 3) dmg *= 2;
@@ -121,16 +127,29 @@
       var off = shots > 1 ? (k === 0 ? -0.05 : 0.05) : 0;
       st.arrows.push({
         x: sx, y: sy, d: sd,
-        vx: vx, vy: vy, vd: ((td + off) - sd) / tt,
+        vx: s.vx, vy: s.vy, vd: ((td + off) - sd) / s.t,
         dmg: dmg, life: 3.5, trail: [],
         hits: 0, pierce: has(st, "pierce"),
-        ang: 0
+        origin: { x: sx, d: sd, y: sy }
       });
     }
     st.shots += shots;
   }
 
   function shootWorld(st, tx, td) { fireAtPoint(st, tx, td); }
+
+  /* 自动瞄准：算敌人的提前量（迭代两次足够） */
+  function predict(st, e) {
+    var tx = e.x, td = e.d;
+    for (var it = 0; it < 2; it++) {
+      var s = solveVy(CFG.archerX + 0.022, CFG.bowH, tx, CFG.aimH, CFG.gravity);
+      var t = s.t;
+      var nx = e.x - e.speed * t;      // 敌人向左走
+      if (nx < CFG.archerX + 0.08) nx = CFG.archerX + 0.08;
+      tx = nx;
+    }
+    return { x: tx, d: td };
+  }
 
   function hitEnemy(st, e, dmg) {
     e.hp -= dmg;
@@ -158,6 +177,7 @@
   function step(st, dt) {
     st.t += dt;
     if (st.invuln > 0) st.invuln -= dt;
+    if (st.hp < st.maxHp) st.hp = Math.min(st.maxHp, st.hp + 0.22 * dt);
 
     st.spawnT -= dt;
     if (st.spawnT <= 0 && st.enemies.length < CFG.maxEnemies) {
@@ -171,11 +191,11 @@
       e.hit = Math.max(0, e.hit - dt * 4);
       if (e.x > CFG.archerX + 0.10) {
         e.x -= e.speed * dt;
-        e.d += Math.sin(st.t * 0.9 + e.bob) * 0.12 * dt;   // 走位更明显 → 不预判会打空
+        e.d += Math.sin(st.t * 0.9 + e.bob) * 0.12 * dt;
       } else {
         e.atkCd -= dt;
         if (e.atkCd <= 0) {
-          e.atkCd = 1.15;
+          e.atkCd = 1.7;
           if (st.invuln <= 0) {
             st.hp -= 1;
             st.fx.push({ t: 0.35, kind: "hurt" });
@@ -190,13 +210,15 @@
       }
     }
 
-    if (has(st, "auto")) {
-      st.fireCd -= dt;
-      if (st.fireCd <= 0) {
-        var near = nearest(st);
-        if (near) { fireAtPoint(st, near.x, near.d); st.fireCd = CFG.fireEvery * 1.3; }
-        else st.fireCd = 0.3;
-      }
+    /* 默认自动瞄准 + 自动射击 */
+    st.fireCd -= dt;
+    if (st.fireCd <= 0) {
+      var near = nearest(st);
+      if (near) {
+        var p = predict(st, near);
+        fireAtPoint(st, p.x, p.d);
+        st.fireCd = CFG.autoEvery * (has(st, "rapid") ? 0.65 : 1);
+      } else st.fireCd = 0.25;
     }
 
     if (has(st, "rain")) {
@@ -216,23 +238,18 @@
       ar.y += ar.vy * dt;
       ar.d += ar.vd * dt;
       ar.life -= dt;
-      ar.ang = Math.atan2(-ar.vy * 90, ar.vx * FIELD_W);
       ar.trail.push({ x: ar.x, y: ar.y, d: ar.d });
-      if (ar.trail.length > 6) ar.trail.shift();
+      if (ar.trail.length > 10) ar.trail.shift();
 
       var hit = null;
       for (var q = 0; q < st.enemies.length; q++) {
         var en = st.enemies[q];
-        if (Math.abs(en.x - ar.x) < CFG.hitR && ar.y < 0.62 && ar.y > -0.03 && Math.abs(en.d - ar.d) < 0.4) { hit = en; break; }
+        if (Math.abs(en.x - ar.x) < CFG.hitR && ar.y < 0.66 && ar.y > -0.03 && Math.abs(en.d - ar.d) < 0.4) { hit = en; break; }
       }
       if (hit) {
         hitEnemy(st, hit, ar.dmg);
         st.comboHits++; st.comboLast = st.t;
-        if (ar.pierce && ar.hits < 2) {
-          ar.hits++;
-          ar.dmg = Math.max(1, Math.round(ar.dmg * 0.7));
-          continue;
-        }
+        if (ar.pierce && ar.hits < 2) { ar.hits++; ar.dmg = Math.max(1, Math.round(ar.dmg * 0.7)); continue; }
         st.arrows.splice(a, 1);
         continue;
       }
@@ -247,11 +264,9 @@
     if (has(st, "combo") && st.t - st.comboLast > 3) st.comboHits = 0;
 
     for (var f = st.fx.length - 1; f >= 0; f--) { st.fx[f].t -= dt; if (st.fx[f].t <= 0) st.fx.splice(f, 1); }
-    for (var p = st.pops.length - 1; p >= 0; p--) { st.pops[p].t -= dt * 1.1; if (st.pops[p].t <= 0) st.pops.splice(p, 1); }
+    for (var p2 = st.pops.length - 1; p2 >= 0; p2--) { st.pops[p2].t -= dt * 1.1; if (st.pops[p2].t <= 0) st.pops.splice(p2, 1); }
     for (var ga = st.groundArrows.length - 1; ga >= 0; ga--) { st.groundArrows[ga].life -= dt; if (st.groundArrows[ga].life <= 0) st.groundArrows.splice(ga, 1); }
   }
-
-  var FIELD_W = 352;
 
   function nearest(st) {
     var best = null, bx = 2;
@@ -261,7 +276,7 @@
 
   root.Battle = {
     CFG: CFG, TALENTS: TALENTS, newState: newState, step: step,
-    fireAtPoint: fireAtPoint, shootWorld: shootWorld, nearest: nearest, has: has,
+    fireAtPoint: fireAtPoint, shootWorld: shootWorld, nearest: nearest, has: has, predict: predict,
     talentCost: talentCost, talentState: talentState, buyTalent: buyTalent
   };
 })(typeof window !== "undefined" ? window : globalThis);
@@ -426,7 +441,7 @@
     g.textAlign = "center";
     g.fillStyle = avail ? "#241605" : "rgba(230,220,205,0.6)";
     g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText(this.panelOpen ? "收起天赋" : ("天赋" + (avail ? " · " + avail + " 可点" : "")), b.x + b.w / 2, b.y + b.h / 2);
+    g.fillText(this.panelOpen ? "收起" : ("天赋" + (avail ? " · " + avail + " 可点" : "")), b.x + b.w / 2, b.y + b.h / 2);
   };
 
   /* ---------- 场景：横版洞窟 ---------- */
@@ -541,7 +556,7 @@
     g.fillText(s.souls + " 魂", W - 22, 40);
     g.fillStyle = "rgba(200,220,245,0.45)";
     g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText(B.has(s, "auto") ? "自动射击中" : "点敌人身上射箭", W - 22, 58);
+    g.fillText("自动瞄准射击中 · 点敌人可手动补一箭", W - 22, 58);
     g.fillStyle = "rgba(200,220,245,0.3)";
     g.fillText("命中率 " + (s.shots ? Math.round(100 * (1 - s.misses / Math.max(1, s.shots * (B.has(s, "multi") ? 2 : 1)))) : 0) + "%", W - 18, 76);
   };
@@ -605,9 +620,10 @@
     g.beginPath(); g.arc(p.x + 1 * sc, p.y - bodyH * 1.0, 5.2 * sc, Math.PI * 0.75, Math.PI * 1.9); g.fill();
     g.fillStyle = "#20262c";
     g.beginPath(); g.arc(p.x + 4 * sc, p.y - bodyH * 1.0, 1.1 * sc, 0, 6.283); g.fill();
-    // 弓（朝右前方，略向上）
-    var bx = p.x + 9 * sc, by = p.y - bodyH * 0.62;
-    var pull = 2.6 + Math.sin(s.t * 6) * 0.6;
+    // 弓：画在箭的真实起点（世界坐标 bowH），保证"箭从弓里射出来"
+    var bowPix = proj(x + 0.022, d, B.CFG.bowH);
+    var bx = bowPix.x, by = bowPix.y;
+    var pull = 3.0 + Math.sin(s.t * 6) * 0.6;
     g.strokeStyle = "#c9a15f";
     g.lineWidth = 2.3 * sc;
     g.beginPath();
@@ -702,26 +718,71 @@
   };
 
   Game.PANEL_BTN = { x: W - 122, y: 96, w: 106, h: 28 };
-  Game.PANEL = { x: 420, y: 44, w: W - 430, h: H - 96 };
+
+  /* 树的位置（横屏 760×420）：按 tier 分层，layer 内左右分列 */
+  var TREE_POS = {
+    atk:     [380, 74],
+    multi:   [250, 138],
+    rapid:   [510, 138],
+    pierce:  [190, 202],
+    combo:   [570, 202],
+    explode: [380, 262],
+    rain:    [300, 318],
+    archer2: [470, 318]
+  };
+  Game.NODE_W = 116;
+  Game.NODE_H = 48;
+
   Game.talentRects = function () {
-    var out = [], P2 = Game.PANEL, w = (P2.w - 10) / 2;
-    for (var i = 0; i < 8; i++) out.push({ i: i, x: P2.x + 4 + (i % 2) * (w + 2), y: P2.y + 34 + Math.floor(i / 2) * 62, w: w, h: 56 });
+    var out = [];
+    for (var i = 0; i < B.TALENTS.length; i++) {
+      var t = B.TALENTS[i], pos = TREE_POS[t.id] || [380, 100 + i * 50];
+      out.push({ i: i, cx: pos[0], cy: pos[1], x: pos[0] - Game.NODE_W / 2, y: pos[1] - Game.NODE_H / 2, w: Game.NODE_W, h: Game.NODE_H, id: t.id });
+    }
     return out;
   };
 
   Game.prototype.drawTalents = function (g, s) {
-    var rects = Game.talentRects(), list = B.TALENTS, P2 = Game.PANEL;
-    g.fillStyle = "rgba(6,9,12,0.94)";
-    rr(g, P2.x - 6, P2.y - 8, P2.w + 12, P2.h + 16, 14);
-    g.fill();
-    g.strokeStyle = "rgba(255,200,130,0.25)";
-    g.lineWidth = 1.2;
-    rr(g, P2.x - 6, P2.y - 8, P2.w + 12, P2.h + 16, 14);
-    g.stroke();
-    g.textAlign = "left";
-    g.fillStyle = "rgba(255,214,150,0.85)";
-    g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("战斗天赋 · 用魂解锁", P2.x + 6, P2.y + 16);
+    var rects = Game.talentRects(), list = B.TALENTS;
+    g.fillStyle = "rgba(5,8,11,0.93)";
+    g.fillRect(0, 0, W, H);
+
+    g.textAlign = "center";
+    g.fillStyle = "rgba(255,214,150,0.9)";
+    g.font = "800 15px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("战 斗 天 赋", W / 2, 30);
+    g.fillStyle = "rgba(200,220,245,0.55)";
+    g.font = "700 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("只能按连线顺序解锁 · 当前 " + s.souls + " 魂 · 点按钮收起", W / 2, 48);
+
+    // 连线
+    for (var li = 0; li < list.length; li++) {
+      var t2 = list[li];
+      for (var r2 = 0; r2 < t2.req.length; r2++) {
+        var from = null, to = null;
+        for (var mi = 0; mi < rects.length; mi++) {
+          if (rects[mi].id === t2.req[r2]) from = rects[mi];
+          if (rects[mi].id === t2.id) to = rects[mi];
+        }
+        if (!from || !to) continue;
+        var on = !!s.talents[t2.id], parentOn = !!s.talents[from.id];
+        g.strokeStyle = on ? "rgba(150,235,180,0.92)" : (parentOn ? "rgba(255,210,130,0.8)" : "rgba(255,255,255,0.22)");
+        g.lineWidth = on ? 3 : 2.2;
+        g.beginPath();
+        g.moveTo(from.cx, from.y + from.h);
+        var midY = (from.y + from.h + to.y) / 2;
+        g.bezierCurveTo(from.cx, midY, to.cx, midY, to.cx, to.y - 7);
+        g.stroke();
+        // 箭头
+        g.fillStyle = on ? "rgba(150,235,180,0.95)" : (parentOn ? "rgba(255,210,130,0.9)" : "rgba(255,255,255,0.25)");
+        g.beginPath();
+        g.moveTo(to.cx, to.y - 1);
+        g.lineTo(to.cx - 5, to.y - 9);
+        g.lineTo(to.cx + 5, to.y - 9);
+        g.closePath();
+        g.fill();
+      }
+    }
     for (var i = 0; i < rects.length; i++) {
       var r = rects[i], t = list[i];
       if (!t) continue;
@@ -736,14 +797,13 @@
       g.stroke();
 
       g.textAlign = "left";
-      g.fillStyle = owned ? "#c9f2d9" : (stt === "locked" ? "rgba(215,200,180,0.5)" : "#fff2dc");
+      g.fillStyle = owned ? "#c9f2d9" : (stt === "locked" ? "rgba(232,220,205,0.72)" : "#fff2dc");
       g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText(t.nm, r.x + 9, r.y + 16);
-      g.fillStyle = "rgba(220,205,185,0.65)";
-      g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText(t.desc.slice(0, 13), r.x + 9, r.y + 32);
-      if (t.desc.length > 13) g.fillText(t.desc.slice(13, 26), r.x + 9, r.y + 45);
-      if (t.desc.length > 26) g.fillText(t.desc.slice(26, 39), r.x + 9, r.y + 56);
+      g.fillText(t.nm, r.x + 10, r.y + 16);
+      g.fillStyle = stt === "locked" ? "rgba(215,200,182,0.5)" : "rgba(226,212,194,0.78)";
+      g.font = "600 9px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(t.desc.slice(0, 11), r.x + 10, r.y + 30);
+      if (t.desc.length > 11) g.fillText(t.desc.slice(11, 22), r.x + 10, r.y + 42);
 
       g.textAlign = "right";
       if (owned) {
@@ -789,7 +849,7 @@
           return;
         }
       }
-      game.panelOpen = false;      // 点空白收起
+      game.panelOpen = false;
       return;
     }
     if (p.y >= FIELD.y && p.y <= FIELD.y + FIELD.h) game.tapField(p.x, p.y);
