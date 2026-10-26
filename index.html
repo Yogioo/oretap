@@ -40,24 +40,24 @@
   function makeNodes() {
     return [
       {
-        id: "pick", nm: "更好的镐", tip: "每次敲击 +1",
+        id: "pick", nm: "更好的镐", tip: "每块矿 +1 矿",
         baseCost: 10, growth: 1.18, tier: 0,
         effect: function (s) { s.tapPower += 1; }
       },
       {
-        id: "cart", nm: "矿车", tip: "自动采 +0.5/秒",
+        id: "cart", nm: "矿车", tip: "自己挖矿 +0.5 块/秒",
         baseCost: 25, growth: 1.16, tier: 0,
         effect: function (s) { s.autoRate += 0.5; }
       },
       {
-        id: "drill", nm: "自动镐", tip: "自动采 +2.5/秒",
+        id: "drill", nm: "自动镐", tip: "自己挖矿 +2.5 块/秒",
         baseCost: 180, growth: 1.19, tier: 1,
         req: function (s) { return (s.bought.cart || 0) >= 3; },
         reqText: "需 3 辆矿车",
         effect: function (s) { s.autoRate += 2.5; }
       },
       {
-        id: "gloves", nm: "厚手套", tip: "敲击 +3（但自动 -10%）",
+        id: "gloves", nm: "厚手套", tip: "手动每块 +3（自动 -10%）",
         baseCost: 420, growth: 1.22, tier: 1,
         req: function (s) { return (s.bought.pick || 0) >= 5; },
         reqText: "需 5 把镐",
@@ -448,6 +448,7 @@
       autoForge: 0, weaponDmg: 0, autoFeed: 0,
       vein: null, veinT: 8, veinLife: 0,
       lastVein: 0, veins: 0,
+      field: [], regenT: 0, regenEvery: 1.15, autoAcc: 0, mined: 0, goldMined: 0,
       chips: [], pops: [],
       rand: (function (s0) {
         var x = (seed || 12345) >>> 0;
@@ -455,6 +456,7 @@
       })(seed)
     };
     st.nodes = makeNodes();
+    initField(st, 40);
     return st;
   }
 
@@ -491,56 +493,120 @@
     return true;
   }
 
-  /* 点一下矿壁 */
-  function tap(st) {
-    st.taps++;
-    var v = st.tapPower;
-    // 连点爆破：每 5 击额外炸一次
-    if (hasTalent(st, "t_burst")) {
-      st.burstC++;
-      if (st.burstC >= 5) { st.burstC = 0; v *= 3; }
-    }
-    st.ore += v; st.total += v;
-    st.pops.push({ v: v, t: 1, x: 0.2 + st.rand() * 0.6, y: 0.15 + st.rand() * 0.5 });
-    for (var i = 0; i < 3; i++) {
-      st.chips.push({
-        x: 0.2 + st.rand() * 0.6, y: 0.2 + st.rand() * 0.5,
-        vx: (st.rand() - 0.5) * 0.9, vy: -0.4 - st.rand() * 0.7,
-        life: 0.5 + st.rand() * 0.4, spin: (st.rand() - 0.5) * 8
-      });
-    }
-    // 点到矿脉：大额
-    if (st.vein && st.veinLife > 0) {
-      var bonus = st.tapPower * CFG.veinMul;
-      st.ore += bonus; st.total += bonus;
-      st.pops.push({ v: bonus, t: 1.4, x: st.vein.x, y: st.vein.y, big: true });
-      st.veins++;
-      if (hasTalent(st, "t_vein")) {
-        st.veinLife = 15;                       // 常驻：15 秒后重新可用，永不消失
-        st.veinOn = false;
-      } else {
-        st.vein = null; st.veinLife = 0;
-      }
-      return { tap: v, bonus: bonus };
-    }
-    return { tap: v, bonus: 0 };
+  /* ============ 矿块区 ============ */
+  var FIELD_COLS = 8, FIELD_ROWS = 5;
+
+  function initField(st, n) {
+    st.field = [];
+    for (var i = 0; i < FIELD_COLS * FIELD_ROWS; i++) st.field.push({ k: 0 });
+    for (var j = 0; j < (n || 40); j++) st.field[j].k = st.rand() < 0.08 ? 2 : 1;
+    st.regenT = 0;
   }
 
-  /* 把一批矿投进炉子（拖拽的目标动作） */
+  function blocksLeft(st) {
+    var n = 0;
+    for (var i = 0; i < st.field.length; i++) if (st.field[i].k > 0) n++;
+    return n;
+  }
+
+  function goldLeft(st) {
+    var n = 0;
+    for (var i = 0; i < st.field.length; i++) if (st.field[i].k === 2) n++;
+    return n;
+  }
+
+  function blockValue(st, cell) {
+    var mul = cell.k === 2 ? 5 : 1;
+    return Math.round(st.tapPower * mul);
+  }
+
+  /* 挖掉第 i 块（手动和自动都走这里） */
+  function mineCell(st, i, byAuto) {
+    var cell = st.field[i];
+    if (!cell || cell.k <= 0) return 0;
+    var v = blockValue(st, cell);
+    st.ore += v; st.total += v;
+    st.mined++;
+    if (cell.k === 2) st.goldMined++;
+    st.pops.push({
+      v: v, t: 1,
+      x: (i % FIELD_COLS + 0.5) / FIELD_COLS,
+      y: (Math.floor(i / FIELD_COLS) + 0.5) / FIELD_ROWS,
+      big: cell.k === 2,
+      auto: !!byAuto
+    });
+    cell.k = 0;
+    return v;
+  }
+
+  /* 再生：每隔 regenEvery 秒长回一块 */
+  function regenTick(st) {
+    var empties = [];
+    for (var i = 0; i < st.field.length; i++) if (st.field[i].k === 0) empties.push(i);
+    if (!empties.length) return false;
+    var pick = empties[Math.floor(st.rand() * empties.length)];
+    var goldChance = 0.08 + (hasTalent(st, "t_vein") ? 0.10 : 0);
+    st.field[pick].k = st.rand() < goldChance ? 2 : 1;
+    // 金矿常驻：场上至少 2 块金
+    if (hasTalent(st, "t_vein") && goldLeft(st) < 2) {
+      var e2 = [];
+      for (var j = 0; j < st.field.length; j++) if (st.field[j].k === 0) e2.push(j);
+      if (e2.length) st.field[e2[Math.floor(st.rand() * e2.length)]].k = 2;
+    }
+    return true;
+  }
+
+  /* 点一下矿壁（旧接口，保留兼容） */
+  /* 点第 i 块矿 */
+  function mineAt(st, i) {
+    if (st.chestFx && st.chestFx.t > 0) st.chestFx.t = 0;
+    var v = mineCell(st, i);
+    if (v > 0) {
+      st.taps++;
+      // 连点爆破：每连 5 次多爆一次
+      if (hasTalent(st, "t_burst")) {
+        st.burstC++;
+        if (st.burstC >= 5) {
+          st.burstC = 0;
+          var bonus = st.tapPower * 3;
+          st.ore += bonus; st.total += bonus;
+          st.pops.push({ v: bonus, t: 1.4, x: (i % FIELD_COLS + 0.5) / FIELD_COLS, y: (Math.floor(i / FIELD_COLS) + 0.5) / FIELD_ROWS, big: true });
+        }
+      }
+      for (var c = 0; c < 3; c++) {
+        st.chips.push({
+          x: (i % FIELD_COLS + 0.3 + st.rand() * 0.4) / FIELD_COLS,
+          y: (Math.floor(i / FIELD_COLS) + 0.3 + st.rand() * 0.4) / FIELD_ROWS,
+          vx: (st.rand() - 0.5) * 0.9, vy: -0.4 - st.rand() * 0.7,
+          life: 0.5 + st.rand() * 0.4, spin: (st.rand() - 0.5) * 8
+        });
+      }
+    }
+    return v;
+  }
+
+  /* 兼容旧接口：默认挖第一块有矿的 */
+  function tap(st) {
+    for (var i = 0; i < st.field.length; i++) if (st.field[i].k > 0) return mineAt(st, i);
+    return 0;
+  }
+
+  /* 把一批矿投进炉子 */
   function feed(st) {
     var f = st.furnace;
     if (st.ore < f.batch) return false;
-    if (f.queue >= 3) return false;          // 炉子最多排 3 批
+    if (f.queue >= 3) return false;
     st.ore -= f.batch;
     f.queue++;
     return true;
   }
 
+  /* 熔炉：双炉天赋时两批同时烧 */
   function stepFurnace(st, dt) {
     var f = st.furnace;
     f.heat = Math.max(0, f.heat - dt * 0.6);
     if (f.queue <= 0) { f.prog = 0; return; }
-    var speed = hasTalent(st, "t_furnace2") ? 2 : 1;   // 双炉：两批同时烧
+    var speed = hasTalent(st, "t_furnace2") ? 2 : 1;
     f.prog += (dt / f.time) * speed;
     while (f.prog >= 1 && f.queue > 0) {
       f.prog -= 1;
@@ -568,6 +634,22 @@
     if (st.autoForge > 0) {
       // 自动锻造：每升一级，多自动打一把的"机会"，但仍是花锭
       for (var af = 0; af < st.autoForge; af++) if (canForge(st)) forge(st);
+    }
+
+    // 矿块再生
+    st.regenT += dt;
+    if (st.regenT >= st.regenEvery) { st.regenT = 0; regenTick(st); }
+
+    // 矿车/自动镐：自己挖同一片矿（会和手抢）
+    if (st.autoRate > 0) {
+      st.autoAcc += st.autoRate * dt;
+      while (st.autoAcc >= 1) {
+        st.autoAcc -= 1;
+        var left = [];
+        for (var ai = 0; ai < st.field.length; ai++) if (st.field[ai].k > 0) left.push(ai);
+        if (!left.length) { st.autoAcc = 0; break; }
+        mineCell(st, left[Math.floor(st.rand() * left.length)], true);
+      }
     }
 
     // 矿脉计时
@@ -618,13 +700,31 @@
       if (c.life <= 0) st.chips.splice(i, 1);
     }
     for (i = st.pops.length - 1; i >= 0; i--) {
-      st.pops[i].t -= dt * (st.pops[i].big ? 0.7 : 1.1);
+      st.pops[i].t -= dt * (st.pops[i].big ? 1.0 : 1.8);
       st.pops[i].y -= dt * 0.12;
       if (st.pops[i].t <= 0) st.pops.splice(i, 1);
     }
   }
 
   /* 离线：矿车/自动镐继续干活，按 50% 结算，封顶 8 小时 */
+  function settleOfflineField(st, hours) {
+    var cap = hasTalent(st, "t_offline") ? 16 : CFG.offlineCapHours;
+    var eff = hasTalent(st, "t_offline") ? 0.85 : CFG.offlineEff;
+    var used = Math.min(hours, cap);
+    if (used <= 0) return 0;
+    // 离线按"再生速度"算可持续产出：每 regenEvery 秒长一块，矿车只能吃长出来的
+    var perSec = 0;
+    if (st.autoRate > 0) {
+      var blockRate = 1 / st.regenEvery;              // 块/秒
+      var value = st.tapPower * 1.08;                  // 平均每块价值（含金矿）
+      perSec = Math.min(st.autoRate, blockRate) * value;
+    }
+    var gain = perSec * used * 3600 * eff;
+    if (gain <= 0) return 0;
+    st.ore += gain; st.total += gain;
+    return gain;
+  }
+
   function settleOffline(st, hours) {
     var cap = hasTalent(st, "t_offline") ? 16 : CFG.offlineCapHours;
     var eff = hasTalent(st, "t_offline") ? 0.85 : CFG.offlineEff;
@@ -640,7 +740,9 @@
     costOf: costOf, canBuy: canBuy, buy: buy, settleOffline: settleOffline,
     feed: feed, allNodes: allNodes, balanceOf: balanceOf, ingotNodes: ingotNodes,
     forge: forge, canForge: canForge, forgeCost: forgeCost, MERC: MERC,
-    openChest: openChest, TALENTS: TALENTS, hasTalent: hasTalent, talentState: talentState, buyTalent: buyTalent, talentById: talentById,
+    openChest: openChest, mineAt: mineAt, mineCell: mineCell, blocksLeft: blocksLeft, goldLeft: goldLeft,
+    FIELD_COLS: FIELD_COLS, FIELD_ROWS: FIELD_ROWS, initField: initField, settleOfflineField: settleOfflineField,
+    TALENTS: TALENTS, hasTalent: hasTalent, talentState: talentState, buyTalent: buyTalent, talentById: talentById,
     ITEMS: ITEMS, SLOT_NM: SLOT_NM, gear: gear, equip: equip, withdraw: withdraw, monsterHp: monsterHp
   };
 })(typeof window !== "undefined" ? window : globalThis);
@@ -679,7 +781,7 @@
     this.lootFx = [];
   }
 
-  Game.ROCK = { x: 24, y: 100, w: W - 48, h: 172 };
+  Game.ROCK = { x: 24, y: 100, w: W - 48, h: 176 };
   Game.FURNACE = { x: 24, y: 280, w: W - 48, h: 46 };
   Game.LANE = { x: 24, y: 330, w: W - 48, h: 84 };
   Game.FORGE = { x: 24, y: 420, w: 224, h: 30 };
@@ -750,7 +852,7 @@
       }
       var hours = Math.max(0, (Date.now() - (d.at || Date.now())) / 3600000);
       if (hours > 0.01 && s.autoRate > 0) {
-        var gain = M.settleOffline(s, hours);
+        var gain = M.settleOfflineField(s, hours);
         if (gain > 0) this.offlineMsg = { hours: hours, gain: gain };
       }
     } catch (e) {}
@@ -809,9 +911,12 @@
     }
     var r = Game.ROCK;
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-      var res = M.tap(this.st);
-      this.shake = res.bonus > 0 ? 1 : 0.45;
-      return { type: "mine", bonus: res.bonus };
+      var ci = Math.floor((x - r.x) / (r.w / M.FIELD_COLS));
+      var ri = Math.floor((y - r.y) / (r.h / M.FIELD_ROWS));
+      var idx = ri * M.FIELD_COLS + ci;
+      var got = M.mineAt(this.st, idx);
+      if (got > 0) this.shake = 0.5;
+      return { type: "mine", idx: idx, got: got };
     }
     return { type: "none" };
   };
@@ -874,81 +979,84 @@
     g.font = "600 10px -apple-system,Segoe UI,Roboto,sans-serif";
     g.fillText("每击 +" + s.tapPower, W - 18, 82);
 
-    /* ---------- 矿壁 ---------- */
+    /* ---------- 矿块区 ---------- */
     var r = Game.ROCK;
-    var sh = this.shake > 0 ? (Math.random() - 0.5) * 5 * this.shake : 0;
+    var cols = M.FIELD_COLS, rows = M.FIELD_ROWS;
+    var cw = r.w / cols, chh = r.h / rows;
+    var sh = this.shake > 0 ? (Math.random() - 0.5) * 4 * this.shake : 0;
+
+    // 矿洞底
     g.save();
     g.translate(sh, sh * 0.4);
-    var grd = g.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
-    grd.addColorStop(0, "#7a6a58");
-    grd.addColorStop(0.4, "#5c4e40");
-    grd.addColorStop(1, "#3a2f26");
-    g.fillStyle = grd;
-    g.beginPath();
-    for (var i = 0; i < 14; i++) {
-      var a = (i / 14) * Math.PI * 2;
-      var rad = 0.5 + (hash(i * 3.7 + 1) - 0.5) * 0.09;
-      var px = r.x + r.w / 2 + Math.cos(a) * r.w * rad * 0.52;
-      var py = r.y + r.h / 2 + Math.sin(a) * r.h * rad * 0.52;
-      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-    }
-    g.closePath();
+    rr(g, r.x - 4, r.y - 4, r.w + 8, r.h + 8, 14);
+    var caveBg = g.createRadialGradient(r.x + r.w / 2, r.y + r.h / 2, 20, r.x + r.w / 2, r.y + r.h / 2, r.w * 0.7);
+    caveBg.addColorStop(0, "rgba(44,34,26,0.95)");
+    caveBg.addColorStop(1, "rgba(16,12,9,0.98)");
+    g.fillStyle = caveBg;
     g.fill();
-    g.strokeStyle = "rgba(255,196,120,0.45)";
-    g.lineWidth = 2.5;
-    g.stroke();
-    g.strokeStyle = "rgba(255,200,110,0.18)";
+    g.strokeStyle = "rgba(255,190,110,0.18)";
     g.lineWidth = 1.2;
-    for (var v = 0; v < 6; v++) {
-      var sy = r.y + 26 + hash(v * 9.1) * (r.h - 52);
-      g.beginPath();
-      g.moveTo(r.x + 26, sy);
-      g.bezierCurveTo(r.x + r.w * 0.35, sy - 12, r.x + r.w * 0.6, sy + 14, r.x + r.w - 26, sy - 4);
-      g.stroke();
-    }
-    var cracks = Math.min(22, Math.floor(s.taps / 6));
-    g.strokeStyle = "rgba(22,15,10,0.6)";
-    g.lineWidth = 1.5;
-    for (var c = 0; c < cracks; c++) {
-      var cx = r.x + r.w * (0.15 + hash(c * 5.3) * 0.7);
-      var cy = r.y + r.h * (0.15 + hash(c * 7.7) * 0.7);
-      var len = 8 + hash(c * 2.3) * 18;
-      g.beginPath();
-      g.moveTo(cx, cy);
-      g.lineTo(cx + Math.cos(c) * len, cy + Math.sin(c * 1.7) * len);
-      g.lineTo(cx + Math.cos(c + 1) * len * 0.7, cy + Math.sin(c + 1) * len * 0.7);
-      g.stroke();
-    }
-    var hcx = r.x + r.w / 2, hcy = r.y + r.h / 2;
-    g.strokeStyle = "rgba(255,214,140," + (0.3 + Math.sin(s.t * 2.2) * 0.15) + ")";
-    g.lineWidth = 2.5;
-    g.beginPath(); g.arc(hcx, hcy, 36 + Math.sin(s.t * 2.2) * 5, 0, 6.283); g.stroke();
-    if (s.taps < 6) {
-      g.fillStyle = "rgba(255,236,200,0.92)";
-      g.font = "800 14px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.textAlign = "center";
-      g.fillText("点这里挖矿", hcx, hcy);
-    }
-    if (s.vein) {
-      var vx = r.x + r.w * s.vein.x, vy = r.y + r.h * s.vein.y;
-      var pulse = 0.6 + Math.sin(s.t * 8) * 0.4;
-      var vg = g.createRadialGradient(vx, vy, 2, vx, vy, 30);
-      vg.addColorStop(0, "rgba(255,214,110," + (0.85 * pulse) + ")");
-      vg.addColorStop(1, "rgba(255,180,60,0)");
-      g.fillStyle = vg;
-      g.beginPath(); g.arc(vx, vy, 30, 0, 6.283); g.fill();
-      g.fillStyle = "#ffe9a8";
-      g.beginPath();
-      for (var k = 0; k < 6; k++) {
-        var ang = k / 6 * 6.283 + s.t;
-        var rr2 = 7 + Math.sin(s.t * 4 + k) * 2;
-        var qx = vx + Math.cos(ang) * rr2, qy = vy + Math.sin(ang) * rr2;
-        if (k === 0) g.moveTo(qx, qy); else g.lineTo(qx, qy);
+    rr(g, r.x - 4, r.y - 4, r.w + 8, r.h + 8, 14);
+    g.stroke();
+
+    for (var bi = 0; bi < s.field.length; bi++) {
+      var cell = s.field[bi];
+      var bx = r.x + (bi % cols) * cw, by = r.y + Math.floor(bi / cols) * chh;
+      var pad = 2.5;
+      if (cell.k > 0) {
+        var gold = cell.k === 2;
+        var bg2 = g.createLinearGradient(bx, by, bx, by + chh);
+        if (gold) { bg2.addColorStop(0, "#f0c060"); bg2.addColorStop(0.5, "#d99a35"); bg2.addColorStop(1, "#a86a1e"); }
+        else { bg2.addColorStop(0, "#8a7663"); bg2.addColorStop(0.5, "#6b5a49"); bg2.addColorStop(1, "#4a3d31"); }
+        g.fillStyle = bg2;
+        rr(g, bx + pad, by + pad, cw - pad * 2, chh - pad * 2, 5);
+        g.fill();
+        // 高光棱面
+        g.fillStyle = gold ? "rgba(255,240,190,0.5)" : "rgba(255,230,190,0.22)";
+        g.beginPath();
+        g.moveTo(bx + pad + 3, by + pad + 3);
+        g.lineTo(bx + cw - pad - 6, by + pad + 3);
+        g.lineTo(bx + pad + 3, by + chh * 0.55);
+        g.closePath();
+        g.fill();
+        // 金矿闪光
+        if (gold) {
+          var tw = 0.5 + Math.sin(s.t * 4 + bi) * 0.5;
+          g.fillStyle = "rgba(255,255,220," + (0.5 * tw) + ")";
+          g.beginPath();
+          g.arc(bx + cw * 0.62, by + chh * 0.4, 2.6, 0, 6.283);
+          g.fill();
+          g.strokeStyle = "rgba(255,230,150,0.55)";
+          g.lineWidth = 1;
+          rr(g, bx + pad, by + pad, cw - pad * 2, chh - pad * 2, 5);
+          g.stroke();
+        }
+      } else {
+        // 挖空：内凹的坑（上暗下亮的反光，读起来是"凹进去"）
+        var hx = bx + pad + 1, hy = by + pad + 1, hw = cw - pad * 2 - 2, hh = chh - pad * 2 - 2;
+        var pit = g.createLinearGradient(hx, hy, hx, hy + hh);
+        pit.addColorStop(0, "rgba(0,0,0,0.62)");
+        pit.addColorStop(0.75, "rgba(0,0,0,0.34)");
+        pit.addColorStop(1, "rgba(255,190,130,0.06)");
+        g.fillStyle = pit;
+        rr(g, hx, hy, hw, hh, 4);
+        g.fill();
+        g.strokeStyle = "rgba(0,0,0,0.5)";
+        g.lineWidth = 1.4;
+        rr(g, hx, hy, hw, hh, 4);
+        g.stroke();
+        g.strokeStyle = "rgba(255,200,150,0.07)";
+        g.lineWidth = 1;
+        g.beginPath();
+        g.moveTo(hx + 3, hy + hh - 2);
+        g.lineTo(hx + hw - 3, hy + hh - 2);
+        g.stroke();
       }
-      g.closePath(); g.fill();
     }
-    for (var ch = 0; ch < s.chips.length; ch++) {
-      var chip = s.chips[ch];
+
+    // 碎屑
+    for (var ch2 = 0; ch2 < s.chips.length; ch2++) {
+      var chip = s.chips[ch2];
       g.globalAlpha = Math.min(1, chip.life * 2);
       g.fillStyle = "#c79a5e";
       g.save();
@@ -958,16 +1066,38 @@
       g.restore();
       g.globalAlpha = 1;
     }
+
+    // 飘字
     for (var p = 0; p < s.pops.length; p++) {
       var pop = s.pops[p];
       g.globalAlpha = Math.min(1, pop.t);
-      g.fillStyle = pop.big ? "#ffd24a" : "#fff0d0";
-      g.font = (pop.big ? "800 22px " : "800 15px ") + "-apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillStyle = pop.big ? "#ffd24a" : (pop.auto ? "rgba(150,220,170,0.95)" : "#fff0d0");
+      g.font = (pop.big ? "800 20px " : "800 14px ") + "-apple-system,Segoe UI,Roboto,sans-serif";
       g.textAlign = "center";
       g.fillText("+" + fmt(pop.v), r.x + r.w * pop.x, r.y + r.h * pop.y);
       g.globalAlpha = 1;
     }
     g.restore();
+
+    if (s.taps < 5) {
+      g.textAlign = "center";
+      g.fillStyle = "rgba(255,240,210," + (0.6 + Math.sin(s.t * 3) * 0.25) + ")";
+      g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("点矿块挖矿", r.x + r.w / 2, r.y + r.h / 2 - 8);
+    }
+
+    // 矿量 / 再生状态
+    var leftN = M.blocksLeft(s);
+    g.textAlign = "left";
+    g.fillStyle = "rgba(255,214,150,0.75)";
+    g.font = "700 10px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("矿块 " + leftN + "/" + s.field.length + (M.goldLeft(s) > 0 ? " · 金 " + M.goldLeft(s) : ""), r.x + 2, r.y - 10);
+    if (leftN === 0) {
+      g.textAlign = "center";
+      g.fillStyle = "rgba(255,190,120,0.9)";
+      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("挖空了 · 矿在慢慢长回来…", r.x + r.w / 2, r.y + r.h / 2);
+    }
 
     /* ---------- 熔炉 ---------- */
     var f = Game.FURNACE, fz = s.furnace;
@@ -1581,7 +1711,17 @@
       game.draw();
       return this.info();
     },
-    tap: function () { return game.hit(W / 2, 180); },
+    tap: function (i) {
+      const c = window && window.OreGame ? null : null;
+      return i === undefined ? game.hit(W / 2, 180) : game.hit(0, 0);
+    },
+    tapCell: function (i) {
+      var cols = window.OreTap.FIELD_COLS, rows = window.OreTap.FIELD_ROWS;
+      var r = window.OreGame.Game.ROCK;
+      var x = r.x + ((i % cols) + 0.5) * (r.w / cols);
+      var y = r.y + (Math.floor(i / cols) + 0.5) * (r.h / rows);
+      return game.hit(x, y);
+    },
     feed: function () { return game.hit(W / 2, 300); },
     forge: function () { return game.hit(GS.FORGE.x + 10, GS.FORGE.y + 10); },
     tab: function (i) { return game.hit(GS.TABS[i].x + 10, GS.TABS[i].y + 10); },
@@ -1596,6 +1736,7 @@
         ore: Math.round(s.ore * 10) / 10, ingot: s.ingot, total: Math.round(s.total),
         tapPower: s.tapPower, autoRate: Math.round(s.autoRate * 10) / 10,
         weapons: s.weapons, kills: s.kills, retreats: s.retreats, tab: game.tab,
+        blocks: window.OreTap.blocksLeft(s), gold: window.OreTap.goldLeft(s),
         depth: s.depth, best: s.runBest, slots: s.slots, chests: s.chests, talents: Object.keys(s.talents), bag: s.bag.map(function(b){return b.nm;}), runs: s.runs,
         forgeCost: M.forgeCost(s),
         merc: { phase: s.merc.phase, hp: Math.round(s.merc.hp), maxHp: s.merc.maxHp },
