@@ -36,8 +36,8 @@
     bowH: 0.17,          // 弓的高度（世界单位）—— 箭必须从这里出
     aimH: 0.24,          // 瞄准高度（敌人胸口）
     autoEvery: 1.15,     // 自动射击间隔
-    v0: 0.78,
-    gravity: 6.0,
+    v0: 1.30,
+    gravity: 4.0,
     atkBase: 1,
     hpBase: 12,
     hitR: 0.045,
@@ -645,33 +645,15 @@
   /* 箭：按真实速度方向旋转 + 3 点拖影，看得出是抛物线 */
   Game.prototype.drawArrow = function (g, ar) {
     var i, B2 = root.Battle.CFG;
-    // 整条抛物线：从当前位置往后推算到落地，画成点线（一眼看出是物理弹道）
-    g.strokeStyle = "rgba(255,235,190,0.30)";
-    g.lineWidth = 1.2;
-    g.beginPath();
-    var first = true;
-    for (i = 0; i <= 22; i++) {
-      var dt = i * 0.028;
-      var px2 = ar.x + ar.vx * dt;
-      var py2 = ar.y + ar.vy * dt - 0.5 * B2.gravity * dt * dt;
-      var pd2 = ar.d + (ar.vd || 0) * dt;
-      if (py2 < 0) break;
-      var sp2 = proj(px2, pd2, py2);
-      if (first) { g.moveTo(sp2.x, sp2.y); first = false; }
-      else g.lineTo(sp2.x, sp2.y);
-    }
-    g.stroke();
     // 走过的拖尾（更粗）
     if (ar.trail && ar.trail.length > 1) {
-      g.strokeStyle = "rgba(255,246,214,0.55)";
-      g.lineWidth = 2;
-      g.beginPath();
-      for (i = 0; i < ar.trail.length; i++) {
-        var t1 = ar.trail[i];
-        var pp = proj(t1.x, t1.d, t1.y);
-        if (i === 0) g.moveTo(pp.x, pp.y); else g.lineTo(pp.x, pp.y);
+      for (i = 0; i < ar.trail.length - 1; i++) {
+        var t1 = ar.trail[i], t2 = ar.trail[i + 1];
+        var p1 = proj(t1.x, t1.d, t1.y), p2 = proj(t2.x, t2.d, t2.y);
+        g.strokeStyle = "rgba(255,240,200," + (0.06 + 0.5 * (i / ar.trail.length)) + ")";
+        g.lineWidth = 0.8 + 2.2 * (i / ar.trail.length);
+        g.beginPath(); g.moveTo(p1.x, p1.y); g.lineTo(p2.x, p2.y); g.stroke();
       }
-      g.stroke();
     }
     var p = proj(ar.x, ar.d, ar.y);
     var pv = proj(ar.x + 0.012, ar.d + (ar.vd || 0) * 0.012, ar.y + ar.vy * 0.012);
@@ -684,14 +666,17 @@
     g.save();
     g.translate(p.x, p.y);
     g.rotate(ang);
-    var L = 12 * p.s;
-    g.strokeStyle = "#3a2a18";
-    g.lineWidth = Math.max(1.6, 2.1 * p.s);
+    var L = 15 * p.s;
+    g.shadowColor = "rgba(255,230,170,0.85)";
+    g.shadowBlur = 6 * p.s;
+    g.strokeStyle = "#f3e8cf";
+    g.lineWidth = Math.max(2, 2.6 * p.s);
     g.beginPath(); g.moveTo(-L, 0); g.lineTo(L * 0.35, 0); g.stroke();
     g.fillStyle = "#fffaf0";
     g.beginPath(); g.moveTo(L * 0.55, 0); g.lineTo(L * 0.1, -3 * p.s); g.lineTo(L * 0.1, 3 * p.s); g.closePath(); g.fill();
-    g.fillStyle = "rgba(255,110,80,0.95)";
-    g.beginPath(); g.moveTo(-L, 0); g.lineTo(-L - 4 * p.s, -3 * p.s); g.lineTo(-L + 1, 0); g.closePath(); g.fill();
+    g.fillStyle = "#ff7a5a";
+    g.beginPath(); g.moveTo(-L, 0); g.lineTo(-L - 5 * p.s, -3.4 * p.s); g.lineTo(-L + 1, 0); g.closePath(); g.fill();
+    g.shadowBlur = 0;
     g.restore();
   };
 
