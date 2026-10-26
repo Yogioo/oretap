@@ -102,7 +102,75 @@
     lootBase: 6, lootPerWeapon: 3
   };
 
-  function monsterHp(st) { return MERC.baseHp + MERC.hpPerKill * st.kills; }
+  var ITEMS = {
+    twin:   { nm: "双刃剑", slot: "sword",  tag: "双刃",   desc: "每挥一次砍两刀", mul: 2 },
+    pierce: { nm: "破甲剑", slot: "sword",  tag: "破甲",   desc: "深处怪物伤害 +60%", mul: 1.6 },
+    wind:   { nm: "疾风靴", slot: "boots",  tag: "疾风",   desc: "挥砍间隔 -40%", mul: 0.6 },
+    swift:  { nm: "赶路靴", slot: "boots",  tag: "赶路",   desc: "路上时间减半，下探更快", mul: 0.5 },
+    greed:  { nm: "贪婪符", slot: "amulet", tag: "贪婪",   desc: "战利品 +80%", mul: 1.8 },
+    crit:   { nm: "暴击符", slot: "amulet", tag: "暴击",   desc: "25% 概率打出 3 倍", mul: 3 }
+  };
+  var SLOT_NM = { sword: "剑", amulet: "护符", boots: "靴" };
+
+  function monsterHp(st) { return 18 + 11 * st.depth; }
+
+  /* 装备词条汇总 */
+  function gear(st) {
+    var g = { swings: 1, interval: MERC.swingEvery, lootMul: 1, crit: 0, walkMul: 1, pierce: false };
+    var keys = ["sword", "amulet", "boots"];
+    for (var i = 0; i < keys.length; i++) {
+      var it = st.slots[keys[i]];
+      if (!it) continue;
+      if (it === "twin") g.swings = 2;
+      if (it === "pierce") g.pierce = true;
+      if (it === "wind") g.interval *= 0.6;
+      if (it === "swift") g.walkMul *= 0.5;
+      if (it === "greed") g.lootMul *= 1.8;
+      if (it === "crit") g.crit = 0.25;
+    }
+    return g;
+  }
+
+  /* 掉落：深度越深，越可能出装备 */
+  function rollDrop(st) {
+    var chance = Math.min(0.75, 0.22 + st.depth * 0.045);
+    if (st.rand() > chance) return null;
+    var pool = ["twin", "pierce", "wind", "swift", "greed", "crit"];
+    var id = pool[Math.floor(st.rand() * pool.length)];
+    var it = { id: id, nm: ITEMS[id].nm, slot: ITEMS[id].slot, tag: ITEMS[id].tag, desc: ITEMS[id].desc, depth: st.depth };
+    // 优先塞进空槽，否则进背包（背包最多 4 件，满了顶掉最旧的）
+    var slotKey = ITEMS[id].slot;
+    if (!st.slots[slotKey]) { st.slots[slotKey] = id; }
+    else {
+      st.bag.push(it);
+      if (st.bag.length > 4) st.bag.shift();
+    }
+    return it;
+  }
+
+  /* 穿上背包里第 i 件（换掉同槽位的旧装备） */
+  function equip(st, i) {
+    var it = st.bag[i];
+    if (!it) return false;
+    var old = st.slots[it.slot];
+    st.slots[it.slot] = it.id;
+    st.bag.splice(i, 1);
+    if (old) st.bag.push({ id: old, nm: ITEMS[old].nm, slot: ITEMS[old].slot, tag: ITEMS[old].tag, desc: ITEMS[old].desc, depth: 0 });
+    return true;
+  }
+
+  /* 撤离：结算矿，清空本局装备，层数归 1 */
+  function withdraw(st) {
+    var bonus = st.depth * 6;
+    st.ore += bonus; st.total += bonus;
+    if (st.depth > st.runBest) st.runBest = st.depth;
+    st.runs++;
+    st.slots = { sword: null, amulet: null, boots: null };
+    st.bag = [];
+    st.depth = 1;
+    st.merc.phase = "out"; st.merc.t = 0; st.merc.hp = 0; st.merc.maxHp = 0;
+    return bonus;
+  }
 
   /* 打造一把武器：花锭，价格递增 */
   function forgeCost(st) { return Math.max(1, Math.floor(1 * Math.pow(1.28, st.weapons))); }
@@ -120,28 +188,38 @@
     m.anim += dt;
     if (m.phase === "out") {
       m.t += dt;
-      if (m.t >= MERC.walk) { m.phase = "fight"; m.t = 0; m.maxHp = monsterHp(st); m.hp = m.maxHp; m.dmgT = 0; }
+      if (m.t >= MERC.walk * gear(st).walkMul) { m.phase = "fight"; m.t = 0; m.maxHp = monsterHp(st); m.hp = m.maxHp; m.dmgT = 0; }
     } else if (m.phase === "fight") {
       m.t += dt;
       m.dmgT += dt;
       m.swing = Math.max(0, m.swing - dt * 3);
-      if (m.dmgT >= MERC.swingEvery) {
+      var gr = gear(st);
+      if (m.dmgT >= gr.interval) {
         m.dmgT = 0;
         m.swing = 1;
-        var dealt = st.weapons * (MERC.dmgPerWeapon + st.weaponDmg);
+        var base = st.weapons * (MERC.dmgPerWeapon + st.weaponDmg);
+        var dealt = base * gr.swings;
+        if (gr.crit > 0 && st.rand() < gr.crit) dealt *= 3;
+        if (gr.pierce && st.depth >= 4) dealt *= 1.6;
+        dealt = Math.round(dealt);
         m.hp -= dealt;
         st.hitFx.push({ t: 1, d: dealt });
         if (m.hp <= 0) {
-          var loot = MERC.lootBase + MERC.lootPerWeapon * st.weapons;
+          var gg = gear(st);
+          var loot = Math.round((MERC.lootBase + MERC.lootPerWeapon * st.weapons) * gg.lootMul * (1 + st.depth * 0.08));
           st.ore += loot; st.total += loot;
           st.kills++;
           m.lastLoot = loot;
+          if (st.depth > st.runBest) st.runBest = st.depth;
+          var got = rollDrop(st);
+          if (got) st.dropFx = { t: 1.6, nm: got.nm, tag: got.tag };
+          st.depth++;
           m.phase = "back"; m.t = 0; m.hp = 0;
         }
       }
-      if (m.phase === "fight" && m.t > MERC.fightLimit) {   // 打不动，撤退
+      if (m.phase === "fight" && m.t > MERC.fightLimit) {   // 打不动 → 本局结束，结算并重置
         st.retreats++;
-        m.phase = "back"; m.t = 0;
+        withdraw(st);
       }
     } else if (m.phase === "back") {
       m.t += dt;
@@ -158,6 +236,10 @@
       weapons: 0, kills: 0, retreats: 0,
       merc: { phase: "out", t: 0, hp: 0, maxHp: 0, swing: 0, dmgT: 0, lastLoot: 0, anim: 0 },
       hitFx: [],
+      depth: 1, runBest: 1, runs: 0,
+      slots: { sword: null, amulet: null, boots: null },
+      bag: [],                 // 本局未装备的掉落
+      dropFx: null,
       furnace: { queue: 0, prog: 0, time: 4.0, batch: 10, ratio: 10, smelted: 0, heat: 0 },
       autoForge: 0, weaponDmg: 0, autoFeed: 0,
       vein: null, veinT: 8, veinLife: 0,
@@ -290,6 +372,8 @@
       if (st.hitFx[hf].t <= 0) st.hitFx.splice(hf, 1);
     }
 
+    if (st.dropFx) { st.dropFx.t -= dt; if (st.dropFx.t <= 0) st.dropFx = null; }
+
     // 粒子 / 飘字
     var i;
     for (i = st.chips.length - 1; i >= 0; i--) {
@@ -320,7 +404,8 @@
     CFG: CFG, newState: newState, step: step, tap: tap,
     costOf: costOf, canBuy: canBuy, buy: buy, settleOffline: settleOffline,
     feed: feed, allNodes: allNodes, balanceOf: balanceOf, ingotNodes: ingotNodes,
-    forge: forge, canForge: canForge, forgeCost: forgeCost, MERC: MERC
+    forge: forge, canForge: canForge, forgeCost: forgeCost, MERC: MERC,
+    ITEMS: ITEMS, SLOT_NM: SLOT_NM, gear: gear, equip: equip, withdraw: withdraw, monsterHp: monsterHp
   };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -361,11 +446,23 @@
   Game.ROCK = { x: 24, y: 100, w: W - 48, h: 172 };
   Game.FURNACE = { x: 24, y: 280, w: W - 48, h: 46 };
   Game.LANE = { x: 24, y: 334, w: W - 48, h: 80 };
-  Game.FORGE = { x: 24, y: 420, w: W - 48, h: 30 };
+  Game.FORGE = { x: 24, y: 420, w: 224, h: 30 };
   Game.TABS = [
-    { x: 24, y: 458, w: 168, h: 30 },
-    { x: 24 + 176, y: 458, w: 168, h: 30 }
+    { x: 24, y: 458, w: 112, h: 30 },
+    { x: 144, y: 458, w: 112, h: 30 },
+    { x: 264, y: 458, w: 112, h: 30 }
   ];
+  Game.WITHDRAW = { x: 256, y: 420, w: 120, h: 30 };
+  Game.SLOTS = function () {
+    var out = [], w = (W - 48 - 12) / 3;
+    for (var i = 0; i < 3; i++) out.push({ i: i, x: 24 + i * (w + 6), y: 490, w: w, h: 58 });
+    return out;
+  };
+  Game.BAGROWS = function () {
+    var out = [];
+    for (var i = 0; i < 4; i++) out.push({ i: i, x: 24, y: 574 + i * 34, w: W - 48, h: 30 });
+    return out;
+  };
   Game.CARDS = function () {
     var out = [];
     for (var i = 0; i < 4; i++) out.push({ i: i, x: 24, y: 492 + i * 52, w: W - 48, h: 46 });
@@ -375,6 +472,7 @@
   var ORE_NODES = ["pick", "cart", "drill", "gloves"];
   var INGOT_NODES = ["blower", "chamber", "autofeed", "autoforge"];
   Game.tabNodes = function (st, tab) {
+    if (tab === 2) return [];
     var ids = tab === 0 ? ORE_NODES : INGOT_NODES, all = M.allNodes(st), out = [];
     for (var i = 0; i < ids.length; i++) for (var j = 0; j < all.length; j++) if (all[j].id === ids[i]) out.push(all[j]);
     return out;
@@ -429,6 +527,20 @@
     var f = Game.FURNACE;
     if (x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h) {
       return { type: "feed", ok: M.feed(this.st) };
+    }
+    var wb = Game.WITHDRAW;
+    if (x >= wb.x && x <= wb.x + wb.w && y >= wb.y && y <= wb.y + wb.h) {
+      return { type: "withdraw", bonus: M.withdraw(this.st) };
+    }
+    if (this.tab === 2) {
+      var rows = Game.BAGROWS();
+      for (i = 0; i < rows.length; i++) {
+        var rw = rows[i];
+        if (x >= rw.x && x <= rw.x + rw.w && y >= rw.y && y <= rw.y + rw.h) {
+          return { type: "equip", ok: M.equip(this.st, i) };
+        }
+      }
+      return { type: "none" };
     }
     var cards = Game.CARDS(), nodes = Game.tabNodes(this.st, this.tab);
     for (i = 0; i < cards.length; i++) {
@@ -728,15 +840,32 @@
       g.globalAlpha = 1;
     }
 
+    // 掉落提示
+    if (s.dropFx) {
+      g.globalAlpha = Math.min(1, s.dropFx.t);
+      g.textAlign = "center";
+      g.fillStyle = "#b8e0ff";
+      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("掉落：" + s.dropFx.nm + "（" + s.dropFx.tag + "）", L.x + L.w / 2, L.y + 40);
+      g.globalAlpha = 1;
+    }
+
     // 状态文案
     g.textAlign = "left";
     g.fillStyle = "rgba(210,235,225,0.85)";
     g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    var stTxt = m.phase === "out" ? "出门中…" : m.phase === "fight" ? "交战中" : "带矿石回来";
-    g.fillText("佣兵 · " + stTxt, L.x + 12, L.y + 13);
-    g.fillStyle = "rgba(200,220,210,0.5)";
-    g.font = "600 10px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("自动出击，不用管 · 撤退 " + s.retreats, L.x + 12, L.y + 27);
+    var stTxt = m.phase === "out" ? "下井中" : m.phase === "fight" ? "交战中" : "带矿石回来";
+    g.fillStyle = "rgba(255,214,120,0.95)";
+    g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("第 " + s.depth + " 层", L.x + 12, L.y + 13);
+    g.fillStyle = "rgba(210,235,225,0.8)";
+    g.font = "800 11px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("· " + stTxt, L.x + 12 + g.measureText("第 " + s.depth + " 层").width + 4, L.y + 13);
+    g.fillStyle = "rgba(200,220,210,0.45)";
+    g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("已通关最深 " + s.runBest + " 层", L.x + 12, L.y + 27);
+
+    // 撤离/结算按钮在打造按钮同一行（下面绘制）
 
     // 打造按钮
     var fgx = Game.FORGE;
@@ -757,9 +886,26 @@
     g.fillStyle = canF ? "#ffd24a" : "rgba(220,200,180,0.4)";
     g.fillText(M.forgeCost(s) + " 锭", fgx.x + fgx.w - 12, fgx.y + fgx.h / 2);
 
+    // 撤离（本局结算，装备清空重来）
+    var wbx = Game.WITHDRAW;
+    rr(g, wbx.x, wbx.y, wbx.w, wbx.h, 9);
+    g.fillStyle = "rgba(255,150,90,0.16)";
+    g.fill();
+    g.strokeStyle = "rgba(255,170,110,0.6)";
+    g.lineWidth = 1.2;
+    rr(g, wbx.x, wbx.y, wbx.w, wbx.h, 9);
+    g.stroke();
+    g.textAlign = "center";
+    g.fillStyle = "#ffd0a8";
+    g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("撤离结算", wbx.x + wbx.w / 2, wbx.y + 11);
+    g.fillStyle = "rgba(255,200,150,0.75)";
+    g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("+" + s.depth * 6 + " 矿 · 换新装备", wbx.x + wbx.w / 2, wbx.y + 23);
+
     /* ---------- 页签 ---------- */
-    var tabs = Game.TABS, labels = ["矿石升级", "铁锭升级"];
-    for (var ti = 0; ti < 2; ti++) {
+    var tabs = Game.TABS, labels = ["矿石", "铁锭", "装备"];
+    for (var ti = 0; ti < 3; ti++) {
       var tb = tabs[ti], on = this.tab === ti;
       rr(g, tb.x, tb.y, tb.w, tb.h, 8);
       g.fillStyle = on ? "rgba(210,150,60,0.25)" : "rgba(255,255,255,0.04)";
@@ -774,9 +920,78 @@
       g.fillText(labels[ti], tb.x + tb.w / 2, tb.y + tb.h / 2);
     }
 
+    /* ---------- 装备页签 ---------- */
+    if (this.tab === 2) {
+      var sl = Game.SLOTS(), keys = ["sword", "amulet", "boots"];
+      for (var si = 0; si < 3; si++) {
+        var box = sl[si], key = keys[si], eq = s.slots[key];
+        rr(g, box.x, box.y, box.w, box.h, 9);
+        g.fillStyle = eq ? "rgba(120,170,255,0.2)" : "rgba(255,255,255,0.035)";
+        g.fill();
+        g.strokeStyle = eq ? "rgba(150,200,255,0.6)" : "rgba(255,255,255,0.1)";
+        g.lineWidth = 1.1;
+        rr(g, box.x, box.y, box.w, box.h, 9);
+        g.stroke();
+        g.textAlign = "center";
+        g.fillStyle = "rgba(200,215,235,0.5)";
+        g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText(M.SLOT_NM[key] + "槽", box.x + box.w / 2, box.y + 14);
+        if (eq) {
+          g.fillStyle = "#dbeaff";
+          g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText(M.ITEMS[eq].nm, box.x + box.w / 2, box.y + 32);
+          g.fillStyle = "rgba(255,200,120,0.85)";
+          g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText(M.ITEMS[eq].tag, box.x + box.w / 2, box.y + 46);
+        } else {
+          g.fillStyle = "rgba(255,255,255,0.2)";
+          g.font = "600 10px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText("空", box.x + box.w / 2, box.y + 36);
+        }
+      }
+
+      var rows2 = Game.BAGROWS();
+      g.textAlign = "left";
+      g.fillStyle = "rgba(190,215,245,0.7)";
+      g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("背包 · 点一行就换上（空槽会自动穿）", 24, 562);
+
+      for (var bi = 0; bi < rows2.length; bi++) {
+        var row = rows2[bi], item = s.bag[bi];
+        rr(g, row.x, row.y, row.w, row.h, 8);
+        g.fillStyle = item ? "rgba(255,255,255,0.055)" : "rgba(255,255,255,0.02)";
+        g.fill();
+        g.strokeStyle = "rgba(255,255,255,0.07)";
+        g.lineWidth = 1;
+        rr(g, row.x, row.y, row.w, row.h, 8);
+        g.stroke();
+        if (item) {
+          g.textAlign = "left";
+          g.fillStyle = "#e9f2ff";
+          g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText(item.nm, row.x + 12, row.y + 12);
+          g.fillStyle = "rgba(255,200,120,0.8)";
+          g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText(item.tag, row.x + 12, row.y + 24);
+          g.fillStyle = "rgba(210,225,240,0.55)";
+          g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText(item.desc, row.x + 74, row.y + 18);
+          g.textAlign = "right";
+          g.fillStyle = "rgba(180,215,255,0.85)";
+          g.font = "800 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText("穿上 →", row.x + row.w - 12, row.y + 18);
+        } else {
+          g.textAlign = "left";
+          g.fillStyle = "rgba(255,255,255,0.16)";
+          g.font = "600 10px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText("空", row.x + 12, row.y + 18);
+        }
+      }
+    }
+
     /* ---------- 升级卡 ---------- */
     var nodes = Game.tabNodes(s, this.tab), cards = Game.CARDS();
-    for (var ci = 0; ci < cards.length; ci++) {
+    for (var ci = 0; ci < cards.length && this.tab !== 2; ci++) {
       var card = cards[ci], node = nodes[ci];
       if (!node) continue;
       var owned = s.bought[node.id] || 0;
@@ -919,7 +1134,7 @@
 /* 敲矿 v3 —— 启动 / 输入（点、拖、页签、打造） */
 (function (root) {
   "use strict";
-  var G = root.OreGame, M = root.OreTap, W = G.W, H = G.H;
+  var G = root.OreGame, GS = root.OreGame.Game, M = root.OreTap, W = G.W, H = G.H;
 
   var game = null, last = 0, saveAcc = 0;
   var down = null, dragging = false;
@@ -1004,8 +1219,10 @@
     },
     tap: function () { return game.hit(W / 2, 180); },
     feed: function () { return game.hit(W / 2, 300); },
-    forge: function () { return game.hit(G.FORGE.x + 10, G.FORGE.y + 10); },
-    tab: function (i) { return game.hit(G.TABS[i].x + 10, G.TABS[i].y + 10); },
+    forge: function () { return game.hit(GS.FORGE.x + 10, GS.FORGE.y + 10); },
+    tab: function (i) { return game.hit(GS.TABS[i].x + 10, GS.TABS[i].y + 10); },
+    equip: function (i) { return game.hit(GS.BAGROWS()[i].x + 10, GS.BAGROWS()[i].y + 10); },
+    withdraw: function () { return game.hit(GS.WITHDRAW.x + 10, GS.WITHDRAW.y + 10); },
     buy: function (id) { return M.buy(game.st, id); },
     info: function () {
       var s = game.st, all = M.allNodes(s);
@@ -1013,6 +1230,7 @@
         ore: Math.round(s.ore * 10) / 10, ingot: s.ingot, total: Math.round(s.total),
         tapPower: s.tapPower, autoRate: Math.round(s.autoRate * 10) / 10,
         weapons: s.weapons, kills: s.kills, retreats: s.retreats, tab: game.tab,
+        depth: s.depth, best: s.runBest, slots: s.slots, bag: s.bag.map(function(b){return b.nm;}), runs: s.runs,
         forgeCost: M.forgeCost(s),
         merc: { phase: s.merc.phase, hp: Math.round(s.merc.hp), maxHp: s.merc.maxHp },
         furnace: { queue: s.furnace.queue, prog: Math.round(s.furnace.prog * 100), batch: s.furnace.batch },
