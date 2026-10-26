@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>敲矿·弓</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#06080a;overflow:hidden;
+    -webkit-tap-highlight-color:transparent;touch-action:none;user-select:none;
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",Roboto,sans-serif}
+  #stage{display:flex;align-items:center;justify-content:center;height:100%}
+  #game{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="game" width="400" height="720"></canvas></div>
+<script>
+/* ==== src/battle.js ==== */
+/* 《敲矿·弓》v10 战斗向原型
+   - 战场带 Z 轴纵深（DNF 那种斜俯视地面）：x 横向、z 纵深（1=最近）、h 离地高度
+   - 开局只有 1 个弓箭手，攻击力 1
+   - 玩家动作：点敌人 → 射一支抛物线箭；天赋解锁多重箭 / 穿透 / 爆炸 / 自动射击 / 箭雨 / 第二弓手
+   - 矿石、熔炉、装备全部隐藏（后续解锁），本版只做战斗 */
+(function (root) {
+  "use strict";
+
+  var CFG = {
+    spawnEvery: 2.4,
+    maxEnemies: 6,
+    archerZ: 0.97,
+    fireEvery: 0.8,
+    arrowSpeed: 1.6,
+    atkBase: 1,
+    hpBase: 10,
+    hitRadius: 0.09,
+    retreatInvuln: 1.6,
+    soulPerKill: 1
+  };
+
+  var TALENTS = [
+    { id: "multi",  nm: "多重箭",   cost: 6,   desc: "一次射 2 支，扇形分开", req: [] },
+    { id: "atk",    nm: "臂力 +1",  cost: 4,   desc: "每支箭伤害 +1（可反复点）", req: [], repeat: true },
+    { id: "pierce", nm: "穿透箭",   cost: 14,  desc: "箭穿过敌人继续飞，最多穿 3 个", req: ["multi"] },
+    { id: "auto",   nm: "自动射击", cost: 22,  desc: "挂机：自动朝最近的敌人射", req: ["atk"] },
+    { id: "explode",nm: "爆炸箭",   cost: 40,  desc: "命中点炸开，周围敌人吃 60% 伤害", req: ["pierce"] },
+    { id: "combo",  nm: "连击",     cost: 60,  desc: "连续命中 3 次后伤害翻倍，脱靶归零", req: ["auto"] },
+    { id: "rain",   nm: "箭雨",     cost: 110, desc: "每 9 秒自动朝随机 5 个位置落箭", req: ["explode"] },
+    { id: "archer2",nm: "第二弓手", cost: 180, desc: "再上一个弓手，独立开火", req: ["rain"] }
+  ];
+
+  function newState(seed) {
+    var st = {
+      t: 0, souls: 0, wave: 1, kills: 0, retreats: 0,
+      hp: CFG.hpBase, maxHp: CFG.hpBase, invuln: 0,
+      arrows: [], enemies: [], fx: [], pops: [],
+      fireCd: 0, spawnT: 1.2, rainT: 0,
+      comboHits: 0, comboLast: 0,
+      talents: {}, bought: {},
+      atk: CFG.atkBase,
+      rand: (function (s0) {
+        var x = (s0 || 12345) >>> 0;
+        return function () { x ^= x << 13; x >>>= 0; x ^= x >> 17; x ^= x << 5; x >>>= 0; return x / 4294967296; };
+      })(seed)
+    };
+    return st;
+  }
+
+  function has(st, id) { return !!st.talents[id]; }
+  function talentCost(st, t) {
+    if (t.repeat) return Math.round(t.cost * Math.pow(1.35, st.bought[t.id] || 0));
+    return t.cost;
+  }
+  function talentState(st, t) {
+    if (!t.repeat && st.talents[t.id]) return "owned";
+    for (var i = 0; i < t.req.length; i++) if (!st.talents[t.req[i]]) return "locked";
+    return st.souls >= talentCost(st, t) ? "ready" : "poor";
+  }
+  function buyTalent(st, id) {
+    var t = null;
+    for (var i = 0; i < TALENTS.length; i++) if (TALENTS[i].id === id) t = TALENTS[i];
+    if (!t || talentState(st, t) !== "ready") return false;
+    st.souls -= talentCost(st, t);
+    st.bought[id] = (st.bought[id] || 0) + 1;
+    st.talents[id] = 1;
+    if (id === "atk") st.atk += 1;
+    if (id === "multi") st.multi = true;
+    st.fx.push({ t: 1.2, kind: "talent", text: t.nm });
+    return true;
+  }
+
+  function spawn(st) {
+    var z = 0.16 + st.rand() * 0.14;
+    var x = -0.9 + st.rand() * 1.8;
+    var hp = 2 + Math.floor(st.wave * 1.4);
+    st.enemies.push({ x: x, z: z, hp: hp, maxHp: hp, speed: 0.055 + Math.min(0.05, st.wave * 0.004), atkCd: 1.0, hit: 0, id: Math.floor(st.rand() * 1e6) });
+  }
+
+  /* 射一支箭：起点在弓手，终点是目标敌人的 3D 位置（飞行 + 抛物线） */
+  function shootAt(st, enemy, fromX) {
+    var sx = fromX === undefined ? 0 : fromX, sz = CFG.archerZ;
+    var ex = enemy.x, ez = enemy.z;
+    var dist = Math.sqrt((ex - sx) * (ex - sx) + (ez - sz) * (ez - sz)) || 0.4;
+    var travel = Math.max(0.28, dist / CFG.arrowSpeed);
+    var dmg = st.atk;
+    if (has(st, "combo") && st.comboHits >= 3) dmg *= 2;
+    var arrows = has(st, "multi") ? 2 : 1;
+    for (var k = 0; k < arrows; k++) {
+      st.arrows.push({
+        x0: sx, z0: sz, x1: ex + (k ? 0.06 : -0.06) * (k ? 1 : 0), z1: ez,
+        t: 0, dur: travel, dmg: dmg, target: enemy.id,
+        arc: 0.5 + dist * 0.5,
+        hits: 0
+      });
+    }
+    st.lastShot = 1;
+  }
+
+  function hitEnemy(st, e, dmg) {
+    e.hp -= dmg;
+    e.hit = 1;
+    st.pops.push({ t: 1, text: "-" + dmg, x: e.x, z: e.z });
+    if (e.hp <= 0) {
+      var idx = st.enemies.indexOf(e);
+      if (idx >= 0) st.enemies.splice(idx, 1);
+      st.kills++;
+      st.souls += CFG.soulPerKill + Math.floor(st.wave / 4);
+      if (st.kills % 6 === 0) st.wave++;
+      st.pops.push({ t: 1.3, text: "+" + (CFG.soulPerKill + Math.floor(st.wave / 4)), x: e.x, z: e.z, soul: true });
+      if (has(st, "explode")) {
+        var list = st.enemies.slice();
+        for (var i = 0; i < list.length; i++) {
+          var o = list[i];
+          var d = Math.sqrt((o.x - e.x) * (o.x - e.x) + (o.z - e.z) * (o.z - e.z));
+          if (d < 0.33) hitEnemy(st, o, Math.max(1, Math.round(dmg * 0.6)));
+        }
+        st.fx.push({ t: 0.5, kind: "boom", x: e.x, z: e.z });
+      }
+    }
+  }
+
+  function step(st, dt) {
+    st.t += dt;
+    if (st.invuln > 0) st.invuln -= dt;
+
+    // 生成
+    st.spawnT -= dt;
+    if (st.spawnT <= 0 && st.enemies.length < CFG.maxEnemies) {
+      st.spawnT = CFG.spawnEvery / (1 + st.wave * 0.03);
+      spawn(st);
+    }
+
+    // 敌人推进
+    for (var i = st.enemies.length - 1; i >= 0; i--) {
+      var e = st.enemies[i];
+      if (!e) continue;
+      e.hit = Math.max(0, e.hit - dt * 4);
+      if (e.z < 0.93) e.z = Math.min(0.93, e.z + e.speed * dt);
+      else {
+        e.atkCd -= dt;
+        if (e.atkCd <= 0) {
+          e.atkCd = 1.1;
+          if (st.invuln <= 0) {
+            st.hp -= 1;
+            st.fx.push({ t: 0.4, kind: "hurt" });
+            if (st.hp <= 0) {
+              // 不清零：退回营地，敌人清场，1.6 秒无敌
+              st.hp = st.maxHp;
+              st.invuln = CFG.retreatInvuln;
+              st.retreats++;
+              st.wave = Math.max(1, st.wave - 1);
+              st.enemies.length = 0;
+              st.arrows.length = 0;
+              st.fx.push({ t: 1.4, kind: "retreat" });
+            }
+          }
+        }
+      }
+    }
+
+    // 自动射击
+    if (has(st, "auto")) {
+      st.fireCd -= dt;
+      if (st.fireCd <= 0) {
+        var near = nearest(st);
+        if (near) { shootAt(st, near); st.fireCd = CFG.fireEvery * 1.25; }
+        else st.fireCd = 0.3;
+      }
+    }
+
+    // 箭雨
+    if (has(st, "rain")) {
+      st.rainT -= dt;
+      if (st.rainT <= 0) {
+        st.rainT = 9;
+        for (var r = 0; r < Math.min(5, st.enemies.length); r++) {
+          var tg = st.enemies[Math.floor(st.rand() * st.enemies.length)];
+          if (tg) shootAt(st, tg, -0.6 + st.rand() * 1.2);
+        }
+        st.fx.push({ t: 1, kind: "rain" });
+      }
+    }
+
+    // 箭飞行
+    for (var a = st.arrows.length - 1; a >= 0; a--) {
+      var ar = st.arrows[a];
+      if (!ar) continue;
+      ar.t += dt;
+      var p = Math.min(1, ar.t / ar.dur);
+      ar.cx = ar.x0 + (ar.x1 - ar.x0) * p;
+      ar.cz = ar.z0 + (ar.z1 - ar.z0) * p;
+      ar.ch = Math.sin(p * Math.PI) * ar.arc;
+      if (p >= 1) {
+        var tgt = null;
+        for (var q = 0; q < st.enemies.length; q++) if (st.enemies[q].id === ar.target) tgt = st.enemies[q];
+        // 若目标已死，命中附近
+        if (!tgt) {
+          for (var q2 = 0; q2 < st.enemies.length; q2++) {
+            var cand = st.enemies[q2];
+            var d2 = Math.sqrt((cand.x - ar.cx) * (cand.x - ar.cx) + (cand.z - ar.cz) * (cand.z - ar.cz));
+            if (d2 < 0.2) { tgt = cand; break; }
+          }
+        }
+        if (tgt) {
+          hitEnemy(st, tgt, ar.dmg);
+          st.comboHits++;
+          st.comboLast = st.t;
+          if (has(st, "pierce") && ar.hits < 2) {
+            ar.hits++;
+            ar.t = 0;
+            ar.dur = 0.16;
+            ar.x0 = ar.cx; ar.z0 = ar.cz;
+            var next = null;
+            for (var q3 = 0; q3 < st.enemies.length; q3++) {
+              var c3 = st.enemies[q3];
+              if (c3 === tgt) continue;
+              if (c3.z < ar.cz) { next = c3; break; }
+            }
+            if (next) { ar.x1 = next.x; ar.z1 = next.z; ar.target = next.id; continue; }
+          }
+        } else {
+          st.comboHits = 0;
+          st.fx.push({ t: 0.35, kind: "miss", x: ar.cx, z: ar.cz });
+        }
+        st.arrows.splice(a, 1);
+      }
+    }
+
+    // 连击超时
+    if (has(st, "combo") && st.t - st.comboLast > 3) st.comboHits = 0;
+
+    // 特效/飘字
+    for (var f = st.fx.length - 1; f >= 0; f--) { st.fx[f].t -= dt; if (st.fx[f].t <= 0) st.fx.splice(f, 1); }
+    for (var pp = st.pops.length - 1; pp >= 0; pp--) {
+      st.pops[pp].t -= dt * 1.1;
+      st.pops[pp].z += dt * 0.02;
+      if (st.pops[pp].t <= 0) st.pops.splice(pp, 1);
+    }
+  }
+
+  function nearest(st) {
+    var best = null, bz = -1;
+    for (var i = 0; i < st.enemies.length; i++) if (st.enemies[i].z > bz) { bz = st.enemies[i].z; best = st.enemies[i]; }
+    return best;
+  }
+
+  root.Battle = {
+    CFG: CFG, TALENTS: TALENTS, newState: newState, step: step,
+    shootAt: shootAt, nearest: nearest, has: has,
+    talentCost: talentCost, talentState: talentState, buyTalent: buyTalent
+  };
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* ==== src/battleview.js ==== */
+/* 《敲矿·弓》渲染 + 输入：DNF 式斜俯视战场（带 Z 轴纵深） */
+(function (root) {
+  "use strict";
+  var B = root.Battle, W = 400, H = 720;
+
+  function rr(g, x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
+
+  var FIELD = { x: 0, y: 92, w: W, h: 408 };
+  var HORIZON = FIELD.y + FIELD.h * 0.14;
+  var BOTTOM = FIELD.y + FIELD.h * 0.96;
+  var CX = W / 2;
+
+  /* 3D → 屏幕：x 横向(-1..1)，z 纵深(0 远 .. 1 近)，h 离地 */
+  function proj(x, z, h) {
+    var t = Math.pow(Math.max(0, Math.min(1, z)), 0.82);
+    var sy = HORIZON + (BOTTOM - HORIZON) * t;
+    var sc = 0.30 + 1.05 * t;
+    var sx = CX + x * (FIELD.w * 0.52) * sc;
+    sy -= (h || 0) * 130 * sc;
+    return { x: sx, y: sy, s: sc };
+  }
+
+  function Game(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.st = B.newState((Date.now() % 99991) + 3);
+    this.hover = null;
+    this.flash = 0;
+  }
+
+  Game.FIELD = FIELD;
+  Game.proj = proj;
+
+  Game.prototype.save = function () {
+    var s = this.st;
+    try {
+      root.localStorage.setItem("oretap_bow_save", JSON.stringify({
+        souls: s.souls, wave: s.wave, kills: s.kills, atk: s.atk,
+        talents: s.talents, bought: s.bought, at: Date.now()
+      }));
+    } catch (e) {}
+  };
+
+  Game.prototype.load = function () {
+    var raw = null;
+    try { raw = root.localStorage.getItem("oretap_bow_save"); } catch (e) {}
+    if (!raw) return;
+    try {
+      var d = JSON.parse(raw), s = this.st;
+      s.souls = d.souls || 0; s.wave = d.wave || 1; s.kills = d.kills || 0;
+      s.atk = d.atk || 1; s.talents = d.talents || {}; s.bought = d.bought || {};
+      s.maxHp = B.CFG.hpBase; s.hp = s.maxHp;
+    } catch (e) {}
+  };
+
+  /* 点战场：射最近的敌人 */
+  Game.prototype.tapField = function (px, py) {
+    var best = null, bd = 1e9;
+    for (var i = 0; i < this.st.enemies.length; i++) {
+      var e = this.st.enemies[i];
+      var p = proj(e.x, e.z, 0.02);
+      var d = Math.hypot(p.x - px, p.y - py);
+      if (d < bd) { bd = d; best = e; }
+    }
+    if (best && bd < 46) {
+      B.shootAt(this.st, best);
+      this.flash = 0.15;
+      return true;
+    }
+    return false;
+  };
+
+  Game.prototype.update = function (dt) {
+    B.step(this.st, dt);
+    if (this.flash > 0) this.flash -= dt;
+  };
+
+  Game.prototype.draw = function () {
+    var g = this.ctx, s = this.st, i;
+    g.clearRect(0, 0, W, H);
+    var bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, "#0b0f14");
+    bg.addColorStop(0.5, "#0a0d11");
+    bg.addColorStop(1, "#06080a");
+    g.fillStyle = bg;
+    g.fillRect(0, 0, W, H);
+
+    this.drawField(g, s);
+    this.drawHud(g, s);
+
+    // 敌人（远→近排序，近的后画）
+    var list = s.enemies.slice().sort(function (a, b) { return a.z - b.z; });
+    for (i = 0; i < list.length; i++) this.drawEnemy(g, list[i], s);
+
+    // 弓手
+    this.drawArcher(g, 0, B.CFG.archerZ, "rgba(200,90,70,0.9)");
+    if (B.has(s, "archer2")) this.drawArcher(g, -0.34, B.CFG.archerZ - 0.04, "rgba(80,130,210,0.9)");
+
+    // 箭（在敌人之后画，显得飞在前面）
+    for (i = 0; i < s.arrows.length; i++) this.drawArrow(g, s.arrows[i]);
+
+    // 飘字 / 特效
+    for (i = 0; i < s.pops.length; i++) {
+      var pop = s.pops[i];
+      var pp = proj(pop.x, pop.z, 0.28);
+      g.globalAlpha = Math.min(1, pop.t);
+      g.fillStyle = pop.soul ? "#ffd24a" : "#ffb08a";
+      g.font = "800 " + Math.round(13 * pp.s) + "px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.textAlign = "center";
+      g.fillText(pop.text, pp.x, pp.y);
+      g.globalAlpha = 1;
+    }
+    for (i = 0; i < s.fx.length; i++) this.drawFx(g, s.fx[i]);
+
+    if (s.invuln > 0) {
+      g.fillStyle = "rgba(255,90,60," + (0.06 + 0.06 * Math.sin(s.t * 20)) + ")";
+      g.fillRect(0, 0, W, H);
+    }
+
+    this.drawTalents(g, s);
+  };
+
+  Game.prototype.drawField = function (g, s) {
+    var F = FIELD;
+    // 洞顶/远景
+    var sky = g.createLinearGradient(0, F.y, 0, HORIZON);
+    sky.addColorStop(0, "#141a20");
+    sky.addColorStop(1, "#1b242c");
+    g.fillStyle = sky;
+    g.fillRect(0, F.y, W, HORIZON - F.y);
+
+    // 地面（石板）
+    var floor = g.createLinearGradient(0, HORIZON, 0, BOTTOM);
+    floor.addColorStop(0, "#2a2620");
+    floor.addColorStop(0.5, "#3a332a");
+    floor.addColorStop(1, "#4a4034");
+    g.fillStyle = floor;
+    g.beginPath();
+    g.moveTo(CX - FIELD.w * 0.24, HORIZON);
+    g.lineTo(CX + FIELD.w * 0.24, HORIZON);
+    g.lineTo(CX + FIELD.w * 0.74, BOTTOM);
+    g.lineTo(CX - FIELD.w * 0.74, BOTTOM);
+    g.closePath();
+    g.fill();
+
+    // 纵深横线
+    g.strokeStyle = "rgba(255,225,180,0.07)";
+    g.lineWidth = 1;
+    for (var z = 0; z <= 1.001; z += 0.1) {
+      var p1 = proj(-1, z, 0), p2 = proj(1, z, 0);
+      g.beginPath(); g.moveTo(p1.x, p1.y); g.lineTo(p2.x, p2.y); g.stroke();
+    }
+    // 纵向线
+    for (var x = -1; x <= 1.001; x += 0.25) {
+      var q1 = proj(x, 0, 0), q2 = proj(x, 1, 0);
+      g.beginPath(); g.moveTo(q1.x, q1.y); g.lineTo(q2.x, q2.y); g.stroke();
+    }
+
+    // 两侧岩壁
+    g.fillStyle = "rgba(0,0,0,0.42)";
+    g.beginPath();
+    g.moveTo(0, HORIZON);
+    g.lineTo(CX - FIELD.w * 0.24, HORIZON);
+    g.lineTo(CX - FIELD.w * 0.74, BOTTOM);
+    g.lineTo(0, BOTTOM);
+    g.closePath(); g.fill();
+    g.beginPath();
+    g.moveTo(W, HORIZON);
+    g.lineTo(CX + FIELD.w * 0.24, HORIZON);
+    g.lineTo(CX + FIELD.w * 0.74, BOTTOM);
+    g.lineTo(W, BOTTOM);
+    g.closePath(); g.fill();
+
+    // 地面火盆（两侧纵深参照物）
+    var lamps = [[-0.82, 0.18], [0.82, 0.22], [-0.7, 0.62], [0.7, 0.66]];
+    for (var li = 0; li < lamps.length; li++) {
+      var lp = proj(lamps[li][0], lamps[li][1], 0);
+      var fr = 10 * lp.s;
+      var lg2 = g.createRadialGradient(lp.x, lp.y - fr, 1, lp.x, lp.y - fr, fr * 2.4);
+      lg2.addColorStop(0, "rgba(255,170,70,0.32)");
+      lg2.addColorStop(1, "rgba(255,140,50,0)");
+      g.fillStyle = lg2;
+      g.beginPath(); g.arc(lp.x, lp.y - fr, fr * 2.4, 0, 6.283); g.fill();
+      g.fillStyle = "#ffcf6a";
+      g.beginPath();
+      g.ellipse(lp.x, lp.y - fr * 0.5, fr * 0.32, fr * 0.55, 0, 0, 6.283);
+      g.fill();
+      g.fillStyle = "rgba(60,45,35,0.9)";
+      rr(g, lp.x - fr * 0.5, lp.y - fr * 0.15, fr, fr * 0.35, 2);
+      g.fill();
+    }
+  };
+
+  Game.prototype.drawHud = function (g, s) {
+    g.textAlign = "left";
+    g.textBaseline = "middle";
+    g.fillStyle = "rgba(230,200,160,0.7)";
+    g.font = "700 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("第 " + s.wave + " 波", 18, 22);
+    g.fillStyle = "#fff2dc";
+    g.font = "800 20px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(s.kills + " 杀", 18, 46);
+
+    // HP
+    var hpW = 132, hpX = 20, hpY = 66;
+    g.fillStyle = "rgba(255,255,255,0.08)";
+    rr(g, hpX, hpY, hpW, 9, 4); g.fill();
+    var hpf = Math.max(0, s.hp / s.maxHp);
+    g.fillStyle = hpf > 0.35 ? "rgba(120,220,150,0.95)" : "rgba(240,110,90,0.95)";
+    rr(g, hpX, hpY, hpW * hpf, 9, 4); g.fill();
+    g.fillStyle = "rgba(255,255,255,0.5)";
+    g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.textAlign = "center";
+    g.fillText(s.hp + " / " + s.maxHp, hpX + hpW / 2, hpY + 4);
+
+    // 右上：攻击力 / 魂
+    g.textAlign = "right";
+    g.fillStyle = "rgba(200,220,245,0.75)";
+    g.font = "700 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("伤害 " + s.atk, W - 18, 22);
+    g.fillStyle = "#ffd24a";
+    g.font = "800 20px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(s.souls + " 魂", W - 18, 46);
+    g.fillStyle = "rgba(200,220,245,0.45)";
+    g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(B.has(s, "auto") ? "自动射击中" : "点敌人射箭", W - 18, 66);
+  };
+
+  Game.prototype.drawEnemy = function (g, e, s) {
+    var p = proj(e.x, e.z, 0);
+    var sc = Math.max(0.62, p.s);      // 远处也不小于这个尺寸，否则看不清
+    // 影子
+    g.fillStyle = "rgba(0,0,0,0.35)";
+    g.beginPath(); g.ellipse(p.x, p.y, 15 * sc, 5 * sc, 0, 0, 6.283); g.fill();
+    // 身体（史莱姆）
+    var bodyH = 26 * sc;
+    var wob = 1 + Math.sin(s.t * 5 + e.id) * 0.06;
+    g.fillStyle = e.hit > 0.05 ? "rgba(255,210,210,0.98)" : "rgba(150,85,190,0.98)";
+    g.beginPath();
+    g.ellipse(p.x, p.y - bodyH * 0.45, 16 * sc * wob, bodyH * 0.55 / wob, 0, 0, 6.283);
+    g.fill();
+    g.strokeStyle = "rgba(255,225,255,0.55)";
+    g.lineWidth = 1.4;
+    g.stroke();
+    g.fillStyle = "rgba(190,130,220,0.55)";
+    g.beginPath();
+    g.ellipse(p.x - 5 * sc, p.y - bodyH * 0.6, 6 * sc, 5 * sc, 0, 0, 6.283);
+    g.fill();
+    // 眼睛（朝下）
+    g.fillStyle = "#140c18";
+    g.beginPath(); g.arc(p.x - 5 * sc, p.y - bodyH * 0.5, 2.2 * sc, 0, 6.283); g.fill();
+    g.beginPath(); g.arc(p.x + 5 * sc, p.y - bodyH * 0.5, 2.2 * sc, 0, 6.283); g.fill();
+    // 血条
+    var bw = 26 * sc;
+    g.fillStyle = "rgba(0,0,0,0.5)";
+    rr(g, p.x - bw / 2, p.y - bodyH - 10 * sc, bw, 4 * sc, 2); g.fill();
+    g.fillStyle = "rgba(235,95,85,0.95)";
+    rr(g, p.x - bw / 2, p.y - bodyH - 10 * sc, bw * Math.max(0, e.hp / e.maxHp), 4 * sc, 2); g.fill();
+  };
+
+  Game.prototype.drawArcher = function (g, x, z, cloak) {
+    var p = proj(x, z, 0), sc = p.s * 1.1;
+    var s = this.st;
+    g.fillStyle = "rgba(0,0,0,0.32)";
+    g.beginPath(); g.ellipse(p.x, p.y + 1, 12 * sc, 4 * sc, 0, 0, 6.283); g.fill();
+    var bodyH = 30 * sc;
+    // 披风
+    g.fillStyle = cloak;
+    g.beginPath();
+    g.moveTo(p.x - 2 * sc, p.y - bodyH * 0.9);
+    g.quadraticCurveTo(p.x - 14 * sc, p.y - bodyH * 0.4, p.x - 10 * sc, p.y);
+    g.quadraticCurveTo(p.x - 4 * sc, p.y - 3 * sc, p.x - 2 * sc, p.y - bodyH * 0.5);
+    g.closePath(); g.fill();
+    // 腿
+    g.strokeStyle = "#3b4a55";
+    g.lineWidth = 3 * sc;
+    g.beginPath(); g.moveTo(p.x - 3 * sc, p.y - bodyH * 0.28); g.lineTo(p.x - 4 * sc, p.y); g.stroke();
+    g.beginPath(); g.moveTo(p.x + 3 * sc, p.y - bodyH * 0.28); g.lineTo(p.x + 4 * sc, p.y); g.stroke();
+    // 身体
+    g.fillStyle = "#8a97a3";
+    rr(g, p.x - 6 * sc, p.y - bodyH * 0.9, 12 * sc, bodyH * 0.62, 4 * sc); g.fill();
+    // 头
+    g.fillStyle = "#c9d4de";
+    g.beginPath(); g.arc(p.x, p.y - bodyH * 1.02, 5.4 * sc, 0, 6.283); g.fill();
+    g.fillStyle = "#6e7c88";
+    g.beginPath(); g.arc(p.x, p.y - bodyH * 1.02, 5.4 * sc, Math.PI * 0.95, Math.PI * 2.05); g.fill();
+    // 弓（指向纵深方向，所以画在身体右侧）
+    var bx = p.x + 8 * sc, by = p.y - bodyH * 0.62;
+    var pull = 3 + (s.invuln > 0 ? 0 : 2);
+    g.strokeStyle = "#c9a15f";
+    g.lineWidth = 2.2 * sc;
+    g.beginPath();
+    g.moveTo(bx, by - 9 * sc);
+    g.quadraticCurveTo(bx + 5 * sc, by, bx, by + 9 * sc);
+    g.stroke();
+    g.strokeStyle = "rgba(245,240,225,0.8)";
+    g.lineWidth = 1 * sc;
+    g.beginPath();
+    g.moveTo(bx, by - 9 * sc);
+    g.lineTo(bx - pull * sc, by);
+    g.lineTo(bx, by + 9 * sc);
+    g.stroke();
+  };
+
+  Game.prototype.drawArrow = function (g, ar) {
+    var p = proj(ar.cx, ar.cz, ar.ch);
+    var ground = proj(ar.cx, ar.cz, 0);
+    // 地面影子（纵深提示）
+    g.fillStyle = "rgba(0,0,0,0.22)";
+    g.beginPath(); g.ellipse(ground.x, ground.y, 3.4 * ground.s, 1.6 * ground.s, 0, 0, 6.283); g.fill();
+    // 箭杆
+    g.strokeStyle = "#f0e6cf";
+    g.lineWidth = Math.max(1.2, 1.8 * p.s);
+    g.beginPath();
+    g.moveTo(p.x - 9 * p.s, p.y + 8 * p.s);
+    g.lineTo(p.x, p.y);
+    g.stroke();
+    g.fillStyle = "#fff8e8";
+    g.beginPath();
+    g.moveTo(p.x, p.y);
+    g.lineTo(p.x - 3.4 * p.s, p.y + 3 * p.s);
+    g.lineTo(p.x + 1.4 * p.s, p.y + 3.6 * p.s);
+    g.closePath(); g.fill();
+  };
+
+  Game.prototype.drawFx = function (g, fx) {
+    if (fx.kind === "boom") {
+      var p = proj(fx.x, fx.z, 0.05);
+      var r = (1 - fx.t / 0.5) * 46 * p.s;
+      g.strokeStyle = "rgba(255,170,80," + Math.max(0, fx.t * 1.6) + ")";
+      g.lineWidth = 3;
+      g.beginPath(); g.arc(p.x, p.y, r, 0, 6.283); g.stroke();
+    } else if (fx.kind === "retreat") {
+      g.fillStyle = "rgba(6,8,10," + Math.min(0.7, fx.t) + ")";
+      g.fillRect(0, 0, W, H);
+      g.textAlign = "center";
+      g.fillStyle = "rgba(255,190,140," + Math.min(1, fx.t) + ")";
+      g.font = "800 18px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("被压退了 · 退回营地", W / 2, 300);
+    } else if (fx.kind === "talent") {
+      g.textAlign = "center";
+      g.fillStyle = "rgba(160,230,190," + Math.min(1, fx.t) + ")";
+      g.font = "800 14px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("解锁：" + fx.text, W / 2, 120 + (1.2 - fx.t) * 10);
+    } else if (fx.kind === "rain") {
+      g.textAlign = "center";
+      g.fillStyle = "rgba(190,220,255," + Math.min(1, fx.t) + ")";
+      g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("箭雨！", W / 2, 150);
+    }
+  };
+
+  Game.talentRects = function () {
+    var out = [], w = (W - 40 - 8) / 2;
+    for (var i = 0; i < 8; i++) out.push({ i: i, x: 20 + (i % 2) * (w + 8), y: 522 + Math.floor(i / 2) * 48, w: w, h: 44 });
+    return out;
+  };
+
+  Game.prototype.drawTalents = function (g, s) {
+    var rects = Game.talentRects(), list = B.TALENTS;
+    g.textAlign = "left";
+    g.fillStyle = "rgba(200,220,245,0.6)";
+    g.font = "800 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText("战斗天赋（点一下用魂解锁）", 20, 510);
+    for (var i = 0; i < rects.length; i++) {
+      var r = rects[i], t = list[i];
+      if (!t) continue;
+      var stt = B.talentState(s, t);
+      var owned = stt === "owned";
+      rr(g, r.x, r.y, r.w, r.h, 9);
+      g.fillStyle = owned ? "rgba(120,200,150,0.2)" : (stt === "ready" ? "rgba(255,190,90,0.22)" : "rgba(255,255,255,0.035)");
+      g.fill();
+      g.strokeStyle = owned ? "rgba(140,220,170,0.65)" : (stt === "ready" ? "rgba(255,205,120,0.8)" : "rgba(255,255,255,0.1)");
+      g.lineWidth = 1.2;
+      rr(g, r.x, r.y, r.w, r.h, 9);
+      g.stroke();
+
+      g.textAlign = "left";
+      g.fillStyle = owned ? "#c9f2d9" : (stt === "locked" ? "rgba(215,200,180,0.5)" : "#fff2dc");
+      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(t.nm, r.x + 10, r.y + 15);
+      g.fillStyle = "rgba(220,205,185,0.6)";
+      g.font = "600 8.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(t.desc.slice(0, 17), r.x + 10, r.y + 28);
+      if (t.desc.length > 17) g.fillText(t.desc.slice(17, 34), r.x + 10, r.y + 38);
+
+      g.textAlign = "right";
+      if (owned) {
+        g.fillStyle = "rgba(140,220,170,0.9)";
+        g.font = "800 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText(t.repeat ? "Lv" + (s.bought[t.id] || 1) : "已解锁", r.x + r.w - 9, r.y + 15);
+      } else if (stt === "locked") {
+        g.fillStyle = "rgba(220,205,185,0.35)";
+        g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText("需前置", r.x + r.w - 9, r.y + 15);
+      } else {
+        g.fillStyle = stt === "ready" ? "#ffd24a" : "rgba(220,200,180,0.42)";
+        g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText(B.talentCost(s, t) + " 魂", r.x + r.w - 9, r.y + 15);
+      }
+    }
+  };
+
+  /* ---------------- 启动 ---------------- */
+  var game = null, last = 0, saveAcc = 0, downAt = null;
+
+  function toLocal(e) {
+    var cv = root.document.getElementById("game");
+    if (!cv._rect) cv._rect = cv.getBoundingClientRect();
+    var r = cv._rect;
+    return { x: (e.clientX - r.left) / (r.width / W), y: (e.clientY - r.top) / (r.height / H) };
+  }
+
+  function onDown(e) {
+    e.preventDefault();
+    var p = toLocal(e);
+    downAt = p;
+    // 天赋
+    var rects = Game.talentRects(), list = B.TALENTS;
+    for (var i = 0; i < rects.length; i++) {
+      var r = rects[i];
+      if (list[i] && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
+        B.buyTalent(game.st, list[i].id);
+        return;
+      }
+    }
+    if (p.y >= FIELD.y && p.y <= FIELD.y + FIELD.h) game.tapField(p.x, p.y);
+  }
+
+  function boot() {
+    var canvas = root.document.getElementById("game");
+    game = new Game(canvas);
+    game.load();
+    fit(canvas);
+    root.addEventListener("resize", function () { fit(canvas); });
+    canvas.addEventListener("pointerdown", onDown);
+    root.addEventListener("visibilitychange", function () { if (game) game.save(); });
+    root.addEventListener("beforeunload", function () { if (game) game.save(); });
+    last = Date.now();
+    loop();
+  }
+
+  function fit(canvas) {
+    var vw = root.innerWidth || W, vh = root.innerHeight || H;
+    var s = Math.min(vw / W, vh / H);
+    canvas.style.width = Math.round(W * s) + "px";
+    canvas.style.height = Math.round(H * s) + "px";
+    canvas._rect = null;
+  }
+
+  function loop() {
+    var now = Date.now();
+    var dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    game.update(dt);
+    game.draw();
+    saveAcc += dt;
+    if (saveAcc > 4) { saveAcc = 0; game.save(); }
+    root.requestAnimationFrame(loop);
+  }
+
+  root.API = {
+    g: function () { return game; },
+    info: function () {
+      var s = game.st;
+      return {
+        souls: s.souls, wave: s.wave, kills: s.kills, atk: s.atk, hp: s.hp,
+        enemies: s.enemies.length, arrows: s.arrows.length,
+        talents: Object.keys(s.talents), retreats: s.retreats
+      };
+    },
+    step: function (n, dt) {
+      dt = dt || 1 / 60;
+      for (var i = 0; i < (n || 1); i++) game.update(dt);
+      game.draw();
+      return this.info();
+    },
+    shootNearest: function () { var e = B.nearest(game.st); if (e) { B.shootAt(game.st, e); return true; } return false; },
+    buy: function (id) { return B.buyTalent(game.st, id); },
+    tapAt: function (x, y) { return game.tapField(x, y); }
+  };
+
+  if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+</body>
+</html>
