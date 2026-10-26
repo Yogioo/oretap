@@ -188,10 +188,11 @@
     var id = DROP_POOL[Math.floor(st.rand() * DROP_POOL.length)];
     var it = makeItem(st, id);
     var slotKey = it.slot;
-    if (!st.slots[slotKey]) {
+    // 击退剑会降低推进速度，属于"要玩家自己决定"的装备，不自动穿
+    if (!st.slots[slotKey] && id !== "knock") {
       st.slots[slotKey] = id;
       it.equipped = true;
-    } else if (st.bag.length < 8) {
+    } else if (st.bag.length < 24) {
       st.bag.push(it);
     } else {
       var refund = 40 + 12 * st.depth;
@@ -286,6 +287,11 @@
     }
 
     if (!g.noAdvance) st.depth++;
+    else {
+      // 击退剑：慢推——每 3 杀仍进 1 层，避免"卡在 4 层到结束"
+      st.knockKills = (st.knockKills || 0) + 1;
+      if (st.knockKills >= 3) { st.knockKills = 0; st.depth++; }
+    }
     if (st.depth > st.runBest) st.runBest = st.depth;
 
     // 连锁剑 / 回响符：不回城，直接下一只
@@ -309,7 +315,8 @@
     if (m.phase === "out") {
       // 矿车靴：路上时间也在产矿
       if (g.cartMine) {
-        var gained = 2 * st.depth * dt;
+        // 按"每块价值"给，不按层数（层数无上限，按层数会指数泄漏）
+        var gained = Math.max(2, st.tapPower * 0.8) * dt;
         st.ore += gained; st.total += gained;
       }
       m.t += dt;
@@ -352,7 +359,7 @@
       }
     } else if (m.phase === "back") {
       if (g.cartMine) {
-        var g2 = 2 * st.depth * dt;
+        var g2 = Math.max(2, st.tapPower * 0.8) * dt;
         st.ore += g2; st.total += g2;
       }
       m.t += dt;
@@ -663,6 +670,9 @@
       st.autoAcc += st.autoRate * dt;
       while (st.autoAcc >= 1) {
         st.autoAcc -= 1;
+        // 手挖优先：场上只剩 8 块以内时，矿车停下来，把矿留给玩家点
+        if (blocksLeft(st) <= 8) { st.autoAcc = 0; st.cartIdle = 1; break; }
+        st.cartIdle = 0;
         var left = [];
         for (var ai = 0; ai < st.field.length; ai++) if (st.field[ai].k > 0) left.push(ai);
         if (!left.length) { st.autoAcc = 0; break; }
@@ -979,9 +989,10 @@
     g.font = "800 32px -apple-system,Segoe UI,Roboto,sans-serif";
     g.fillText(fmt(s.ore), 18, 46);
     if (s.autoRate > 0) {
-      g.fillStyle = "rgba(140,220,160,0.9)";
+      var idle = s.cartIdle;
+      g.fillStyle = idle ? "rgba(255,190,120,0.85)" : "rgba(140,220,160,0.9)";
       g.font = "700 11px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("矿车 +" + s.autoRate.toFixed(1) + "/s", 20, 70);
+      g.fillText(idle ? "矿车等矿 · 剩下的留给你点" : "矿车 +" + s.autoRate.toFixed(1) + "/s", 20, 70);
     }
     g.textAlign = "right";
     g.fillStyle = "rgba(200,220,255,0.7)";
