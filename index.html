@@ -182,9 +182,9 @@
   }
 
   /* 掉落：深度越深越容易出，出的是"机制"不是"数值" */
-  function rollDrop(st) {
+  function rollDrop(st, force) {
     var chance = Math.min(0.8, 0.24 + st.depth * 0.05);
-    if (st.rand() > chance) return null;
+    if (!force && st.rand() > chance) return null;
     var id = DROP_POOL[Math.floor(st.rand() * DROP_POOL.length)];
     var it = makeItem(st, id);
     var slotKey = it.slot;
@@ -237,8 +237,7 @@
     return Math.max(1, Math.round(base * mul));
   }
 
-  function startFight(st, scale) {
-    var m = st.merc;
+  function startFight(st, m, scale) {
     m.phase = "fight";
     m.t = 0;
     m.maxHp = monsterHp(st, scale);
@@ -247,8 +246,20 @@
     m.scale = scale || 1;
   }
 
+  /* 手动开宝箱：给矿 + 一件装备（这是"点一下有惊喜"的手感） */
+  function openChest(st) {
+    if (st.chests <= 0) return false;
+    st.chests--;
+    var gain = 60 + st.depth * 12;
+    st.ore += gain; st.total += gain;
+    var it = rollDrop(st, true);
+    st.chestFx = { t: 2, nm: it ? it.nm : "只有矿 +" + gain, gain: gain };
+    return true;
+  }
+
   function killMonster(st, m, g) {
     var loot = lootOf(st, g, m.scale < 1 ? 0.6 : 1);
+    if (m === st.merc2) loot = Math.round(loot * 1.6);   // 第二佣兵战利品 +60%
     st.ore += loot; st.total += loot;
     st.kills++;
     m.lastLoot = loot;
@@ -260,13 +271,17 @@
       st.minisLeft += 2;
     }
 
+    if (hasTalent(st, "t_chest")) {
+      st.chestKills++;
+      var need = hasTalent(st, "t_lucky") ? 3 : 5;
+      if (st.chestKills >= need) { st.chestKills = 0; st.chests++; }
+    }
     var got = rollDrop(st);
     if (got) st.dropFx = { t: 1.6, nm: got.nm, tag: got.tag + (got.equipped ? " · 已装备" : "") };
 
     if (st.minisLeft > 0) {                    // 打分裂出来的小怪，不推层
       st.minisLeft--;
-      startFight(st, 0.5);
-      m.phase = "fight";
+      startFight(st, m, 0.5);
       return;
     }
 
@@ -281,9 +296,14 @@
     }
   }
 
-  /* 佣兵状态机：out → fight → back → out */
+  /* 佣兵状态机：out → fight → back → out（支持多个佣兵） */
   function stepMerc(st, dt) {
-    var m = st.merc, g = gear(st);
+    stepMercObj(st, st.merc, dt);
+  }
+
+  function stepMercObj(st, m, dt) {
+    if (m.t < 0) { m.t += dt; return; }        // 错峰出发
+    var g = gear(st);
     m.anim += dt;
 
     if (m.phase === "out") {
@@ -293,7 +313,7 @@
         st.ore += gained; st.total += gained;
       }
       m.t += dt;
-      if (m.t >= MERC.walk) startFight(st, 1);
+      if (m.t >= MERC.walk) startFight(st, m, 1);
     } else if (m.phase === "fight") {
       m.t += dt;
       m.dmgT += dt;
@@ -340,6 +360,74 @@
     }
   }
 
+  /* ============ 天赋树：节点 = 新系统/新行为 ============ */
+  var TALENTS = [
+    {
+      id: "t_vein", nm: "矿脉常驻", tier: 0, cost: { ore: 120 },
+      desc: "矿脉不再消失，点爆后 15 秒重新凝聚",
+      req: []
+    },
+    {
+      id: "t_burst", nm: "连点爆破", tier: 0, cost: { ore: 200 },
+      desc: "每连点 5 下，第 5 下多爆一次（3 倍）",
+      req: []
+    },
+    {
+      id: "t_cart", nm: "矿车自动入站", tier: 1, cost: { ore: 500 },
+      desc: "每 30 秒免费来一辆矿车，永远不停工",
+      req: ["t_vein"]
+    },
+    {
+      id: "t_merc2", nm: "第二佣兵", tier: 1, cost: { ore: 800, ingot: 5 },
+      desc: "再招一个佣兵，两人各下一口井，战利品 +60%",
+      req: ["t_cart"]
+    },
+    {
+      id: "t_chest", nm: "宝箱", tier: 2, cost: { ore: 1500, ingot: 10 },
+      desc: "每 5 次击杀掉一个宝箱，手点打开：装备 + 一笔矿",
+      req: ["t_merc2"]
+    },
+    {
+      id: "t_furnace2", nm: "双炉并列", tier: 2, cost: { ore: 2200, ingot: 12 },
+      desc: "第二座熔炉：两批同时烧，排队上限翻倍",
+      req: ["t_cart"]
+    },
+    {
+      id: "t_lucky", nm: "宝箱保底", tier: 3, cost: { ore: 3000, ingot: 18 },
+      desc: "宝箱改成每 3 杀一个，而且必定开出装备",
+      req: ["t_chest"]
+    },
+    {
+      id: "t_offline", nm: "离线专家", tier: 3, cost: { ore: 4000, ingot: 20 },
+      desc: "离线上限 8→16 小时，效率 50%→85%",
+      req: ["t_furnace2"]
+    }
+  ];
+
+  function hasTalent(st, id) { return !!st.talents[id]; }
+  function talentById(id) { for (var i = 0; i < TALENTS.length; i++) if (TALENTS[i].id === id) return TALENTS[i]; return null; }
+  function talentState(st, t) {
+    if (st.talents[t.id]) return "owned";
+    for (var i = 0; i < t.req.length; i++) if (!st.talents[t.req[i]]) return "locked";
+    if (st.ore < (t.cost.ore || 0)) return "poor";
+    if (st.ingot < (t.cost.ingot || 0)) return "poor";
+    return "ready";
+  }
+  function buyTalent(st, id) {
+    var t = talentById(id);
+    if (!t || talentState(st, t) !== "ready") return false;
+    st.ore -= (t.cost.ore || 0);
+    st.ingot -= (t.cost.ingot || 0);
+    st.talents[id] = 1;
+    st.talentFx = { t: 2, nm: t.nm };
+    return true;
+  }
+
+  /* 第二个佣兵对象 */
+  function newMerc(offset) {
+    return { phase: "out", t: -(offset || 0), hp: 0, maxHp: 0, swing: 0, dmgT: 0, lastLoot: 0, anim: 0, scale: 1 };
+  }
+
   function newState(seed) {
     var st = {
       t: 0, ore: 0, total: 0,
@@ -350,8 +438,10 @@
       merc: { phase: "out", t: 0, hp: 0, maxHp: 0, swing: 0, dmgT: 0, lastLoot: 0, anim: 0 },
       hitFx: [],
       depth: 1, runBest: 1, runs: 0, blockedAt: 1,
-      slots: { sword: null, amulet: null, boots: null },
+      slots: { sword: null, amulet: null, boots: null, ring: null },
       combo: 0, minisLeft: 0, stuck: 0, sacFx: 0,
+      talents: {}, chests: 0, chestKills: 0, cartTimer: 0, burstC: 0, talentFx: null,
+      merc2: newMerc(1.1),
       bag: [],                 // 本局未装备的掉落
       dropFx: null,
       furnace: { queue: 0, prog: 0, time: 4.0, batch: 10, ratio: 10, smelted: 0, heat: 0 },
@@ -405,6 +495,11 @@
   function tap(st) {
     st.taps++;
     var v = st.tapPower;
+    // 连点爆破：每 5 击额外炸一次
+    if (hasTalent(st, "t_burst")) {
+      st.burstC++;
+      if (st.burstC >= 5) { st.burstC = 0; v *= 3; }
+    }
     st.ore += v; st.total += v;
     st.pops.push({ v: v, t: 1, x: 0.2 + st.rand() * 0.6, y: 0.15 + st.rand() * 0.5 });
     for (var i = 0; i < 3; i++) {
@@ -419,8 +514,13 @@
       var bonus = st.tapPower * CFG.veinMul;
       st.ore += bonus; st.total += bonus;
       st.pops.push({ v: bonus, t: 1.4, x: st.vein.x, y: st.vein.y, big: true });
-      st.vein = null; st.veinLife = 0;
       st.veins++;
+      if (hasTalent(st, "t_vein")) {
+        st.veinLife = 15;                       // 常驻：15 秒后重新可用，永不消失
+        st.veinOn = false;
+      } else {
+        st.vein = null; st.veinLife = 0;
+      }
       return { tap: v, bonus: bonus };
     }
     return { tap: v, bonus: 0 };
@@ -439,16 +539,18 @@
   function stepFurnace(st, dt) {
     var f = st.furnace;
     f.heat = Math.max(0, f.heat - dt * 0.6);
-    if (f.queue <= 0) return;
-    f.prog += dt / f.time;
-    if (f.prog >= 1) {
-      f.prog = 0;
+    if (f.queue <= 0) { f.prog = 0; return; }
+    var speed = hasTalent(st, "t_furnace2") ? 2 : 1;   // 双炉：两批同时烧
+    f.prog += (dt / f.time) * speed;
+    while (f.prog >= 1 && f.queue > 0) {
+      f.prog -= 1;
       f.queue--;
       st.ingot += 1;
       st.ingotTotal += 1;
       f.smelted++;
       f.heat = 1;
     }
+    if (f.queue <= 0) f.prog = 0;
   }
 
   function step(st, dt) {
@@ -478,8 +580,24 @@
     }
     if (st.vein) {
       st.veinLife -= dt;
-      if (st.veinLife <= 0) { st.vein = null; st.veinT = CFG.veinEveryMin + st.rand() * (CFG.veinEveryMax - CFG.veinEveryMin); }
+      if (st.veinLife <= 0) {
+        if (hasTalent(st, "t_vein")) {
+          st.veinLife = 15;                     // 常驻：冷却完继续亮着
+        } else {
+          st.vein = null; st.veinT = CFG.veinEveryMin + st.rand() * (CFG.veinEveryMax - CFG.veinEveryMin);
+        }
+      }
     }
+
+    // 自动矿车：每 30 秒白给一辆
+    if (hasTalent(st, "t_cart")) {
+      st.cartTimer += dt;
+      if (st.cartTimer >= 30) { st.cartTimer = 0; st.autoRate += 0.5; st.cartFx = 1; }
+    }
+    if (st.cartFx) st.cartFx = Math.max(0, st.cartFx - dt * 0.5);
+
+    // 第二佣兵
+    if (hasTalent(st, "t_merc2")) stepMercObj(st, st.merc2, dt);
 
     for (var hf = st.hitFx.length - 1; hf >= 0; hf--) {
       st.hitFx[hf].t -= dt * 1.6;
@@ -508,9 +626,11 @@
 
   /* 离线：矿车/自动镐继续干活，按 50% 结算，封顶 8 小时 */
   function settleOffline(st, hours) {
-    var used = Math.min(hours, CFG.offlineCapHours);
+    var cap = hasTalent(st, "t_offline") ? 16 : CFG.offlineCapHours;
+    var eff = hasTalent(st, "t_offline") ? 0.85 : CFG.offlineEff;
+    var used = Math.min(hours, cap);
     if (used <= 0 || st.autoRate <= 0) return 0;
-    var gain = st.autoRate * used * 3600 * CFG.offlineEff;
+    var gain = st.autoRate * used * 3600 * eff;
     st.ore += gain; st.total += gain;
     return gain;
   }
@@ -520,6 +640,7 @@
     costOf: costOf, canBuy: canBuy, buy: buy, settleOffline: settleOffline,
     feed: feed, allNodes: allNodes, balanceOf: balanceOf, ingotNodes: ingotNodes,
     forge: forge, canForge: canForge, forgeCost: forgeCost, MERC: MERC,
+    openChest: openChest, TALENTS: TALENTS, hasTalent: hasTalent, talentState: talentState, buyTalent: buyTalent, talentById: talentById,
     ITEMS: ITEMS, SLOT_NM: SLOT_NM, gear: gear, equip: equip, withdraw: withdraw, monsterHp: monsterHp
   };
 })(typeof window !== "undefined" ? window : globalThis);
@@ -560,13 +681,20 @@
 
   Game.ROCK = { x: 24, y: 100, w: W - 48, h: 172 };
   Game.FURNACE = { x: 24, y: 280, w: W - 48, h: 46 };
-  Game.LANE = { x: 24, y: 334, w: W - 48, h: 80 };
+  Game.LANE = { x: 24, y: 330, w: W - 48, h: 84 };
   Game.FORGE = { x: 24, y: 420, w: 224, h: 30 };
   Game.TABS = [
-    { x: 24, y: 458, w: 112, h: 30 },
-    { x: 144, y: 458, w: 112, h: 30 },
-    { x: 264, y: 458, w: 112, h: 30 }
+    { x: 24, y: 458, w: 82, h: 30 },
+    { x: 110, y: 458, w: 82, h: 30 },
+    { x: 196, y: 458, w: 82, h: 30 },
+    { x: 282, y: 458, w: 82, h: 30 }
   ];
+  Game.CHEST = { x: 256, y: 420, w: 120, h: 30 };
+  Game.TCARDS = function () {
+    var out = [], w = (W - 48 - 8) / 2;
+    for (var i = 0; i < 8; i++) out.push({ i: i, x: 24 + (i % 2) * (w + 8), y: 492 + Math.floor(i / 2) * 52, w: w, h: 47 });
+    return out;
+  };
   Game.WITHDRAW = { x: 256, y: 420, w: 120, h: 30 };
   Game.SLOTS = function () {
     var out = [], w = (W - 48 - 12) / 3;
@@ -646,6 +774,20 @@
     var wb = Game.WITHDRAW;
     if (x >= wb.x && x <= wb.x + wb.w && y >= wb.y && y <= wb.y + wb.h) {
       return { type: "withdraw", bonus: M.withdraw(this.st) };
+    }
+    var cb = Game.CHEST;
+    if (x >= cb.x && x <= cb.x + cb.w && y >= cb.y && y <= cb.y + cb.h) {
+      return { type: "chest", ok: M.openChest(this.st) };
+    }
+    if (this.tab === 3) {
+      var tc = Game.TCARDS(), list = M.TALENTS;
+      for (i = 0; i < tc.length; i++) {
+        var car = tc[i];
+        if (list[i] && x >= car.x && x <= car.x + car.w && y >= car.y && y <= car.y + car.h) {
+          return { type: "talent", id: list[i].id, ok: M.buyTalent(this.st, list[i].id) };
+        }
+      }
+      return { type: "none" };
     }
     if (this.tab === 2) {
       var rows = Game.BAGROWS();
@@ -899,6 +1041,10 @@
     g.lineWidth = 2;
     g.setLineDash([8, 8]);
     g.beginPath(); g.moveTo(L.x + 12, roadY); g.lineTo(L.x + L.w - 12, roadY); g.stroke();
+    if (M.hasTalent(s, "t_merc2")) {
+      g.strokeStyle = "rgba(255,255,255,0.05)";
+      g.beginPath(); g.moveTo(L.x + 12, roadY - 26); g.lineTo(L.x + L.w - 12, roadY - 26); g.stroke();
+    }
     g.setLineDash([]);
 
     // 怪物位置
@@ -933,6 +1079,28 @@
     // 佣兵
     drKnight(g, mercX, mercY - bob, m.phase === "fight" ? (m.swing > 0.5 ? 1 : m.swing > 0 ? 0.5 : 0) : -1, s.t);
 
+    // 第二佣兵（天赋解锁后才有）
+    if (M.hasTalent(s, "t_merc2")) {
+      var m2 = s.merc2, m2x, m2y = roadY - 42;
+      if (m2.t < 0) m2x = L.x + 38;
+      else if (m2.phase === "out") {
+        m2x = L.x + 38 + (monX - 44 - (L.x + 38)) * Math.min(1, m2.t / M.MERC.walk);
+      } else if (m2.phase === "fight") m2x = monX - 44;
+      else m2x = (monX - 44) - ((monX - 44) - (L.x + 38)) * Math.min(1, m2.t / M.MERC.back);
+      var m2x2 = m2x - 34;
+      g.fillStyle = "rgba(0,0,0,0.28)";
+      g.beginPath(); g.ellipse(m2x2, roadY - 27, 11, 3.5, 0, 0, 6.283); g.fill();
+      g.save();
+      g.translate(m2x2, roadY - 40);
+      g.scale(0.85, 0.85);
+      drKnight(g, 0, 0, m2.phase === "fight" ? (m2.swing > 0.5 ? 1 : m2.swing > 0 ? 0.5 : 0) : -1, s.t + 1.3, "rgba(70,120,200,0.9)");
+      g.restore();
+      g.textAlign = "center";
+      g.fillStyle = "rgba(180,215,255,0.9)";
+      g.font = "800 9px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("②", m2x2, roadY - 46);
+    }
+
     // 伤害飘字
     for (var hi = 0; hi < s.hitFx.length; hi++) {
       var hf2 = s.hitFx[hi];
@@ -951,7 +1119,18 @@
       g.fillStyle = "#ffd24a";
       g.font = "800 15px -apple-system,Segoe UI,Roboto,sans-serif";
       g.textAlign = "center";
-      g.fillText("+" + fx.v + " 矿", L.x + L.w / 2, L.y + 40 - (1.6 - fx.t) * 16);
+      g.fillText("+" + fx.v + " 矿", L.x + L.w - 96, L.y + 11);
+      g.globalAlpha = 1;
+    }
+
+    // 开箱提示
+    if (s.chestFx && s.chestFx.t > 0) {
+      s.chestFx.t -= 0.016;
+      g.globalAlpha = Math.min(1, s.chestFx.t);
+      g.textAlign = "center";
+      g.fillStyle = "#ffd98a";
+      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("开出：" + s.chestFx.nm, L.x + L.w - 12, L.y + 35);
       g.globalAlpha = 1;
     }
 
@@ -961,7 +1140,7 @@
       g.textAlign = "center";
       g.fillStyle = "#b8e0ff";
       g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("掉落：" + s.dropFx.nm + "（" + s.dropFx.tag + "）", L.x + L.w / 2, L.y + 40);
+      g.fillText("掉落：" + s.dropFx.nm, L.x + L.w - 12, L.y + 23);
       g.globalAlpha = 1;
     }
 
@@ -972,13 +1151,13 @@
     var stTxt = m.phase === "out" ? "下井中" : m.phase === "fight" ? "交战中" : "带矿石回来";
     g.fillStyle = "rgba(255,214,120,0.95)";
     g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("第 " + s.depth + " 层", L.x + 12, L.y + 13);
+    g.fillText("第 " + s.depth + " 层", L.x + 12, L.y + 11);
     g.fillStyle = "rgba(210,235,225,0.8)";
     g.font = "800 11px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("· " + stTxt, L.x + 12 + g.measureText("第 " + s.depth + " 层").width + 4, L.y + 13);
+    g.fillText("· " + stTxt, L.x + 12 + g.measureText("第 " + s.depth + " 层").width + 4, L.y + 11);
     g.fillStyle = "rgba(200,220,210,0.45)";
     g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("最高到过 " + s.runBest + " 层 · 打不动会自动退一层继续刷", L.x + 12, L.y + 27);
+    g.fillText("最高 " + s.runBest + " 层 · 打不动自动退一层继续刷", L.x + 12, L.y + 23);
 
     // 撤离/结算按钮在打造按钮同一行（下面绘制）
 
@@ -1001,6 +1180,23 @@
     g.fillStyle = canF ? "#ffd24a" : "rgba(220,200,180,0.4)";
     g.fillText(M.forgeCost(s) + " 锭", fgx.x + fgx.w - 12, fgx.y + fgx.h / 2);
 
+    // 宝箱按钮
+    var cbx = Game.CHEST, hasChest = s.chests > 0;
+    rr(g, cbx.x, cbx.y, cbx.w, cbx.h, 9);
+    g.fillStyle = hasChest ? "rgba(255,190,90,0.28)" : "rgba(255,255,255,0.04)";
+    g.fill();
+    g.strokeStyle = hasChest ? "rgba(255,205,120,0.9)" : "rgba(200,180,150,0.18)";
+    g.lineWidth = hasChest ? 1.6 : 1.1;
+    rr(g, cbx.x, cbx.y, cbx.w, cbx.h, 9);
+    g.stroke();
+    g.textAlign = "center";
+    g.fillStyle = hasChest ? "#ffe6b0" : "rgba(220,200,180,0.4)";
+    g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(hasChest ? "开宝箱 ×" + s.chests : "宝箱 ×0", cbx.x + cbx.w / 2, cbx.y + 12);
+    g.fillStyle = "rgba(255,210,150,0.6)";
+    g.font = "600 9px -apple-system,Segoe UI,Roboto,sans-serif";
+    g.fillText(M.hasTalent(s, "t_lucky") ? "每 3 杀 · 必出" : (M.hasTalent(s, "t_chest") ? "每 5 杀一个" : "需要天赋"), cbx.x + cbx.w / 2, cbx.y + 24);
+
     // 打不动的提示
     if (s.blockedAt >= s.depth && s.retreats > 0 && s.depth <= s.blockedAt) {
       g.textAlign = "right";
@@ -1010,8 +1206,8 @@
     }
 
     /* ---------- 页签 ---------- */
-    var tabs = Game.TABS, labels = ["矿石", "铁锭", "装备"];
-    for (var ti = 0; ti < 3; ti++) {
+    var tabs = Game.TABS, labels = ["矿石", "铁锭", "装备", "天赋"];
+    for (var ti = 0; ti < 4; ti++) {
       var tb = tabs[ti], on = this.tab === ti;
       rr(g, tb.x, tb.y, tb.w, tb.h, 8);
       g.fillStyle = on ? "rgba(210,150,60,0.25)" : "rgba(255,255,255,0.04)";
@@ -1024,6 +1220,60 @@
       g.fillStyle = on ? "#ffe6c2" : "rgba(220,200,180,0.55)";
       g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
       g.fillText(labels[ti], tb.x + tb.w / 2, tb.y + tb.h / 2);
+    }
+
+    /* ---------- 天赋页签 ---------- */
+    if (this.tab === 3) {
+      var tcards = Game.TCARDS(), tlist = M.TALENTS;
+      for (var ti2 = 0; ti2 < tcards.length; ti2++) {
+        var tc = tcards[ti2], tl = tlist[ti2];
+        if (!tl) continue;
+        var stt = M.talentState(s, tl);
+        var owned = stt === "owned";
+        rr(g, tc.x, tc.y, tc.w, tc.h, 9);
+        g.fillStyle = owned ? "rgba(120,200,150,0.22)" : (stt === "ready" ? "rgba(255,190,90,0.22)" : "rgba(255,255,255,0.035)");
+        g.fill();
+        g.strokeStyle = owned ? "rgba(140,220,170,0.7)" : (stt === "ready" ? "rgba(255,205,120,0.8)" : "rgba(255,255,255,0.1)");
+        g.lineWidth = 1.2;
+        rr(g, tc.x, tc.y, tc.w, tc.h, 9);
+        g.stroke();
+
+        g.textAlign = "left";
+        g.fillStyle = owned ? "#c9f2d9" : (stt === "locked" ? "rgba(220,205,185,0.45)" : "#fff2dc");
+        g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
+        g.fillText(tl.nm, tc.x + 10, tc.y + 14);
+
+        g.fillStyle = "rgba(220,205,185,0.62)";
+        g.font = "600 9px -apple-system,Segoe UI,Roboto,sans-serif";
+        var words = tl.desc, cut = 15;
+        g.fillText(words.slice(0, cut), tc.x + 10, tc.y + 26);
+        if (words.length > cut) g.fillText(words.slice(cut, cut * 2), tc.x + 10, tc.y + 36);
+
+        g.textAlign = "right";
+        var costTxt = (tl.cost.ore || 0) + "矿" + (tl.cost.ingot ? "+" + tl.cost.ingot + "锭" : "");
+        if (owned) {
+          g.fillStyle = "rgba(140,220,170,0.9)";
+          g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText("已点亮", tc.x + tc.w - 10, tc.y + 14);
+        } else {
+          g.fillStyle = stt === "ready" ? "#ffd24a" : "rgba(220,200,180,0.45)";
+          g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
+          g.fillText(costTxt, tc.x + tc.w - 10, tc.y + 14);
+          g.font = "700 8.5px -apple-system,Segoe UI,Roboto,sans-serif";
+          if (stt === "locked") {
+            var pre = M.talentById(tl.req[0]);
+            g.fillStyle = "rgba(220,205,185,0.34)";
+            g.fillText("需:" + (pre ? pre.nm : "前置"), tc.x + tc.w - 10, tc.y + 40);
+          } else {
+            g.fillStyle = stt === "ready" ? "rgba(255,214,120,0.85)" : "rgba(255,255,255,0.35)";
+            g.fillText(stt === "ready" ? "点亮 →" : "资源不足", tc.x + tc.w - 10, tc.y + 40);
+          }
+        }
+      }
+      g.textAlign = "center";
+      g.fillStyle = "rgba(255,214,120,0.6)";
+      g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("天赋永久生效 · 每个节点解锁一个新系统", W / 2, 706);
     }
 
     /* ---------- 装备页签 ---------- */
@@ -1105,7 +1355,7 @@
 
     /* ---------- 升级卡 ---------- */
     var nodes = Game.tabNodes(s, this.tab), cards = Game.CARDS();
-    for (var ci = 0; ci < cards.length && this.tab !== 2; ci++) {
+    for (var ci = 0; ci < cards.length && this.tab < 2; ci++) {
       var card = cards[ci], node = nodes[ci];
       if (!node) continue;
       var owned = s.bought[node.id] || 0;
@@ -1186,11 +1436,11 @@
   };
 
   /* 简笔佣兵：身体 + 头盔 + 剑 + 披风 */
-  function drKnight(g, x, y, swing, t) {
+  function drKnight(g, x, y, swing, t, cloak) {
     g.save();
     g.translate(x, y);
     // 披风
-    g.fillStyle = "rgba(190,80,70,0.85)";
+    g.fillStyle = cloak || "rgba(190,80,70,0.85)";
     g.beginPath();
     g.moveTo(-2, -16);
     g.quadraticCurveTo(-14, -6, -10, 6);
@@ -1337,6 +1587,8 @@
     tab: function (i) { return game.hit(GS.TABS[i].x + 10, GS.TABS[i].y + 10); },
     equip: function (i) { return game.hit(GS.BAGROWS()[i].x + 10, GS.BAGROWS()[i].y + 10); },
     withdraw: function () { return game.hit(GS.WITHDRAW.x + 10, GS.WITHDRAW.y + 10); },
+    chest: function () { return game.hit(GS.CHEST.x + 10, GS.CHEST.y + 10); },
+    talent: function (i) { var c = GS.TCARDS()[i]; return game.hit(c.x + 10, c.y + 10); },
     buy: function (id) { return M.buy(game.st, id); },
     info: function () {
       var s = game.st, all = M.allNodes(s);
@@ -1344,7 +1596,7 @@
         ore: Math.round(s.ore * 10) / 10, ingot: s.ingot, total: Math.round(s.total),
         tapPower: s.tapPower, autoRate: Math.round(s.autoRate * 10) / 10,
         weapons: s.weapons, kills: s.kills, retreats: s.retreats, tab: game.tab,
-        depth: s.depth, best: s.runBest, slots: s.slots, bag: s.bag.map(function(b){return b.nm;}), runs: s.runs,
+        depth: s.depth, best: s.runBest, slots: s.slots, chests: s.chests, talents: Object.keys(s.talents), bag: s.bag.map(function(b){return b.nm;}), runs: s.runs,
         forgeCost: M.forgeCost(s),
         merc: { phase: s.merc.phase, hp: Math.round(s.merc.hp), maxHp: s.merc.maxHp },
         furnace: { queue: s.furnace.queue, prog: Math.round(s.furnace.prog * 100), batch: s.furnace.batch },
