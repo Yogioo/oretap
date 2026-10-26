@@ -21,10 +21,9 @@
 <div id="rotate">请横过手机 ⟳</div>
 <script>
 /* ==== src/battle.js ==== */
-/* 《敲矿·弓》v14 —— 按评审改两件事：
-   ① 天赋树改成「每层二选一、互斥」：选了散射支就锁死速射支，随机点 vs 会点差距要 >30%
-   ② 敌人曲线：走位随波数变快（自动瞄准会失准）、敌人数量随波数变多、打空有代价
-   ③ 手动补箭 = 瞄准射击（1.6 倍伤害），把「会玩」变成真的技巧轴 */
+/* 《敲矿·弓》v15 —— 天赋树扩到 21 个节点、五条支线，为"build"服务
+   支线：散射 / 疾风 / 陷阱 / 伙伴 / 生存，两条主干在 T1 互斥（散射 vs 疾风），
+   其余节点按前置发散；魂的收入不足以点满全树，所以必须选路线。 */
 (function (root) {
   "use strict";
 
@@ -43,39 +42,59 @@
     hitR: 0.045,
     soulPerKill: 1,
     retreatInvuln: 1.6,
-    manualMul: 1.6,       // 手动补箭 = 瞄准射击，伤害更高
-    slackPenalty: 0.55    // 连续打空的惩罚（停火）
+    manualMul: 1.6,
+    slackPenalty: 0.55
   };
 
-  /* 树：tier 分层，branch 互斥（同 branch 组只能选一个），req 前置 */
   var TALENTS = [
-    { id: "atk",     nm: "臂力",     tier: 0, cost: 4,   desc: "每支箭伤害 +1（可反复）", req: [], repeat: true },
+    /* ---- 根 ---- */
+    { id: "atk",      nm: "弓术",     tier: 0, cost: 4,   desc: "每支箭伤害 +1（可反复）", req: [], repeat: true, br: "root" },
 
-    { id: "multi",   nm: "散射",     tier: 1, cost: 10,  desc: "一次射 2 支，上下分开", req: ["atk"], fork: "T1" },
-    { id: "rapid",   nm: "速射",     tier: 1, cost: 10,  desc: "射击间隔 -35%", req: ["atk"], fork: "T1" },
+    /* ---- T1 互斥主干 ---- */
+    { id: "multi",    nm: "散射",     tier: 1, cost: 10,  desc: "额外一箭，打第二个敌人", req: ["atk"], fork: "T1", br: "spread" },
+    { id: "rapid",    nm: "疾风",     tier: 1, cost: 10,  desc: "射击间隔 -35%", req: ["atk"], fork: "T1", br: "speed" },
 
-    { id: "pierce",  nm: "穿透",     tier: 2, cost: 24,  desc: "箭穿过敌人再飞，最多 3 个", req: ["multi"], fork: "T2" },
-    { id: "combo",   nm: "连击",     tier: 2, cost: 24,  desc: "连中 3 次伤害翻倍", req: ["rapid"], fork: "T2" },
+    /* ---- T2 ---- */
+    { id: "pierce",   nm: "穿透",     tier: 2, cost: 24,  desc: "箭穿人继续飞，最多 3 个", req: ["multi"], br: "spread" },
+    { id: "armor",    nm: "皮甲",     tier: 2, cost: 18,  desc: "血量 +5，站着挨打也扛得住", req: ["atk"], br: "survive" },
+    { id: "combo",    nm: "连击",     tier: 2, cost: 24,  desc: "连中 3 次伤害翻倍", req: ["rapid"], br: "speed" },
+    { id: "slowfield",nm: "泥沼",     tier: 2, cost: 20,  desc: "敌人进前场速度 -40%", req: ["atk"], br: "trap" },
 
-    { id: "explode", nm: "爆炸箭",   tier: 3, cost: 55,  desc: "命中点炸开，周围吃 60%", req: ["pierce"], fork: "T3" },
-    { id: "hawk",    nm: "鹰眼",     tier: 3, cost: 55,  desc: "自动瞄准更准（少打空）+ 手瞄更狠", req: ["combo"], fork: "T3" },
+    /* ---- T3 ---- */
+    { id: "explode",  nm: "爆炸箭",   tier: 3, cost: 55,  desc: "命中点炸开，周围吃 60%", req: ["pierce"], br: "spread" },
+    { id: "thorns",   nm: "荆棘",     tier: 3, cost: 30,  desc: "被咬时反弹 3 点伤害", req: ["armor"], br: "survive" },
+    { id: "hawk",     nm: "鹰眼",     tier: 3, cost: 55,  desc: "自动瞄准更准 + 手瞄 +25%", req: ["combo"], br: "speed" },
+    { id: "snare",    nm: "绊索",     tier: 3, cost: 45,  desc: "每 12 秒定住一个敌人 1.6 秒", req: ["slowfield"], br: "trap" },
 
-    { id: "rain",    nm: "箭雨",     tier: 4, cost: 120, desc: "每 9 秒落 5 支箭", req: ["explode"], fork: "T4" },
-    { id: "archer2", nm: "第二弓手", tier: 4, cost: 120, desc: "再上一个弓手，独立开火", req: ["hawk"], fork: "T4" },
+    /* ---- T4 ---- */
+    { id: "oilfire",  nm: "火油",     tier: 4, cost: 90,  desc: "爆炸处留火 3 秒，踩到持续掉血", req: ["explode"], br: "spread" },
+    { id: "dodge",    nm: "轻身",     tier: 4, cost: 70,  desc: "20% 概率闪掉一次撕咬", req: ["thorns"], br: "survive" },
+    { id: "hound",    nm: "猎犬",     tier: 4, cost: 85,  desc: "放一条狗出去咬最近的敌人", req: ["slowfield"], br: "trap" },
+    { id: "archer2",  nm: "第二弓手", tier: 4, cost: 120, desc: "再上一个弓手，独立开火", req: ["hawk"], br: "speed" },
 
-    { id: "storm",   nm: "箭幕",     tier: 5, cost: 240, desc: "箭雨改成每 4.5 秒一輪", req: ["rain"], fork: "T5" },
-    { id: "guard",   nm: "护卫",     tier: 5, cost: 240, desc: "血量 +8，被咬时反弹伤害", req: ["archer2"], fork: "T5" }
+    /* ---- T5 ---- */
+    { id: "rain",     nm: "箭雨",     tier: 5, cost: 150, desc: "每 9 秒朝一片区域落 5 支箭", req: ["oilfire"], br: "spread" },
+    { id: "totem",    nm: "战鼓",     tier: 5, cost: 130, desc: "插战鼓，全场伤害 +20%", req: ["hound"], br: "trap" },
+    { id: "falcon",   nm: "猎鹰",     tier: 5, cost: 140, desc: "猎鹰每 5 秒俯冲 10 伤", req: ["archer2"], br: "speed" },
+    { id: "bastion",  nm: "堡垒",     tier: 5, cost: 150, desc: "血量 +10，回血速度翻倍", req: ["dodge"], br: "survive" },
+
+    /* ---- T6 终局 ---- */
+    { id: "storm",    nm: "箭幕",     tier: 6, cost: 300, desc: "箭雨改成 4.5 秒一轮", req: ["rain"], br: "spread" },
+    { id: "queen",    nm: "鹰群女王", tier: 6, cost: 320, desc: "再放两只猎鹰（共三只）", req: ["falcon"], br: "speed" },
+    { id: "quake",    nm: "地动",     tier: 6, cost: 300, desc: "绊索改成范围定身（3 个）", req: ["totem"], br: "trap" },
+    { id: "immortal", nm: "不灭",     tier: 6, cost: 320, desc: "被压退时不清场，只回满血", req: ["bastion"], br: "survive" }
   ];
 
   function newState(seed) {
     return {
       t: 0, souls: 0, wave: 1, kills: 0, retreats: 0, misses: 0, shots: 0, hits: 0,
       hp: CFG.hpBase, maxHp: CFG.hpBase, invuln: 0, slack: 0, missStreak: 0,
-      arrows: [], enemies: [], fx: [], pops: [], groundArrows: [],
-      spawnT: 1.0, fireCd: 0.8, rainT: 9,
+      arrows: [], enemies: [], fx: [], pops: [], groundArrows: [], fires: [], snares: [],
+      spawnT: 1.0, fireCd: 0.8, rainT: 9, snareT: 12, falconT: 5, houndT: 0,
       comboHits: 0, comboLast: 0,
-      talents: {}, bought: {}, atk: CFG.atkBase,
-      forks: {},                     // 互斥标记：'A' / 'B'
+      talents: {}, bought: {}, atk: CFG.atkBase, forks: {},
+      hound: { x: 0.30, d: 0.0, target: null, bite: 0 },
+      markBonus: 0,
       rand: (function (s0) {
         var x = (s0 || 12345) >>> 0;
         return function () { x ^= x << 13; x >>>= 0; x ^= x >> 17; x ^= x << 5; x >>>= 0; return x / 4294967296; };
@@ -84,12 +103,10 @@
   }
 
   function has(st, id) { return !!st.talents[id]; }
+  function byId(id) { for (var i = 0; i < TALENTS.length; i++) if (TALENTS[i].id === id) return TALENTS[i]; return null; }
   function talentCost(st, t) {
     return t.repeat ? Math.round(t.cost * Math.pow(1.4, st.bought[t.id] || 0)) : t.cost;
   }
-  function byId(id) { for (var i = 0; i < TALENTS.length; i++) if (TALENTS[i].id === id) return TALENTS[i]; return null; }
-
-  /* 自己或祖先被互斥封锁 → 整条分支都算封闭 */
   function isSealed(st, t, depth) {
     if (!t) return false;
     if ((depth || 0) > 8) return false;
@@ -100,7 +117,6 @@
     }
     return false;
   }
-
   function talentState(st, t) {
     if (!t.repeat && st.talents[t.id]) return "owned";
     if (isSealed(st, t)) return "sealed";
@@ -108,19 +124,26 @@
     return st.souls >= talentCost(st, t) ? "ready" : "poor";
   }
   function buyTalent(st, id) {
-    var t = null;
-    for (var i = 0; i < TALENTS.length; i++) if (TALENTS[i].id === id) t = TALENTS[i];
+    var t = byId(id);
     if (!t || talentState(st, t) !== "ready") return false;
     st.souls -= talentCost(st, t);
     st.bought[id] = (st.bought[id] || 0) + 1;
     st.talents[id] = 1;
-    if (t.fork) st.forks[t.fork] = id;              // 锁死另一支
+    if (t.fork) st.forks[t.fork] = id;
     if (id === "atk") st.atk += 1;
-    if (id === "guard") { st.maxHp += 8; st.hp = st.maxHp; }
+    if (id === "armor") { st.maxHp += 5; st.hp = st.maxHp; }
+    if (id === "bastion") { st.maxHp += 10; st.hp = st.maxHp; }
     st.fx.push({ t: 1.2, kind: "talent", text: t.nm });
     return true;
   }
   function maxEnemies(st) { return Math.min(7, CFG.maxEnemiesBase + Math.floor(st.wave / 8)); }
+  function dmgMul(st) {
+    var m = 1;
+    if (has(st, "totem")) m *= 1.35;
+    if (has(st, "bastion")) m *= 1.20;
+    if (has(st, "immortal") && st.hp >= st.maxHp - 0.5) m *= 1.25;
+    return m;
+  }
 
   function spawn(st) {
     var d = -0.7 + st.rand() * 1.4;
@@ -128,7 +151,7 @@
     st.enemies.push({
       x: 1.03 + st.rand() * 0.05, d: d, hp: hp, maxHp: hp,
       speed: 0.075 + Math.min(0.06, st.wave * 0.005),
-      atkCd: 1.0, hit: 0, bob: st.rand() * 6.28,
+      atkCd: 1.0, hit: 0, bob: st.rand() * 6.28, slow: 0, stun: 0,
       id: Math.floor(st.rand() * 1e6)
     });
   }
@@ -140,8 +163,6 @@
     var vy = ((ty - sy) + 0.5 * CFG.gravity * t * t) / t;
     return { vx: vx, vy: vy, t: t };
   }
-
-  /* 自动瞄准的误差随波数变大；（鹰眼）会收紧误差 */
   function aimError(st) {
     var base = Math.min(0.10, 0.012 + st.wave * 0.0016);
     if (has(st, "hawk")) base *= 0.45;
@@ -154,31 +175,20 @@
     var sy = CFG.bowH;
     var s = solveVy(sx, sy, tx, CFG.aimH);
 
-    var dmg = st.atk * (mul || 1);
+    var dmg = st.atk * (mul || 1) * dmgMul(st);
     if (manual) dmg *= CFG.manualMul * (has(st, "hawk") ? 1.25 : 1);
     if (has(st, "combo") && st.comboHits >= 3) dmg *= 2;
     dmg = Math.max(1, Math.round(dmg));
 
-    st.arrows.push({
-      x: sx, y: sy, d: sd,
-      vx: s.vx, vy: s.vy, vd: (td - sd) / s.t,
-      dmg: dmg, life: 3.5, trail: [],
-      hits: 0, pierce: has(st, "pierce"), manual: !!manual, area: !!area
-    });
+    st.arrows.push({ x: sx, y: sy, d: sd, vx: s.vx, vy: s.vy, vd: (td - sd) / s.t, dmg: dmg, life: 3.5, trail: [], hits: 0, pierce: has(st, "pierce"), manual: !!manual, area: !!area });
     st.shots++;
 
-    // 散射：额外一箭打"第二近的敌人"（不够就打同一个）
     if (has(st, "multi")) {
-      var list = st.enemies.slice().sort(function (a, b2) { return a.x - b2.x; });
+      var list = st.enemies.slice().sort(function (a, b) { return a.x - b.x; });
       var t2 = list[1] || list[0];
       if (t2) {
         var s2 = solveVy(sx, sy, t2.x, CFG.aimH);
-        st.arrows.push({
-          x: sx, y: sy, d: sd,
-          vx: s2.vx, vy: s2.vy, vd: (t2.d - sd) / s2.t,
-          dmg: dmg, life: 3.5, trail: [],
-          hits: 0, pierce: has(st, "pierce"), manual: !!manual, area: !!area
-        });
+        st.arrows.push({ x: sx, y: sy, d: sd, vx: s2.vx, vy: s2.vy, vd: (t2.d - sd) / s2.t, dmg: dmg, life: 3.5, trail: [], hits: 0, pierce: has(st, "pierce"), manual: !!manual, area: !!area });
         st.shots++;
       }
     }
@@ -195,42 +205,45 @@
       var s = solveVy(CFG.archerX + 0.022, CFG.bowH, tx, CFG.aimH);
       tx = Math.max(CFG.archerX + 0.08, e.x - e.speed * s.t);
     }
-    // 误差：横向 + 纵深都会偏
     tx += (st.rand() - 0.5) * err * 2;
     td += (st.rand() - 0.5) * err * 2.6;
     return { x: tx, d: td };
   }
 
-  function hitEnemy(st, e, dmg, manual) {
+  function killEnemy(st, e, dmg) {
+    var i = st.enemies.indexOf(e);
+    if (i >= 0) st.enemies.splice(i, 1);
+    st.kills++;
+    var gain = CFG.soulPerKill + Math.floor(st.wave / 4);
+    st.souls += gain;
+    if (st.kills % 6 === 0) st.wave++;
+    st.pops.push({ t: 1.3, text: "+" + gain, x: e.x, d: e.d, h: 0.8, soul: true });
+    if (has(st, "explode") || has(st, "oilfire")) {
+      var list = st.enemies.slice();
+      for (var j = 0; j < list.length; j++) {
+        var o = list[j];
+        if (Math.abs(o.x - e.x) < 0.22 && Math.abs(o.d - e.d) < 0.5) hurt(st, o, Math.max(1, Math.round(dmg * 0.45)));
+      }
+      st.fx.push({ t: 0.5, kind: "boom", x: e.x, d: e.d, h: 0.4 });
+      if (has(st, "oilfire")) st.fires.push({ x: e.x, d: e.d, life: 3, tick: 0 });
+    }
+  }
+
+  function hurt(st, e, dmg) {
+    if (e.stun > 0) dmg = Math.round(dmg * 1.5);   // 被定身 = 吃额外伤害
     e.hp -= dmg;
     e.hit = 1;
     st.hits++;
-    st.pops.push({ t: 1, text: "-" + dmg, x: e.x, d: e.d, h: 0.55, manual: !!manual });
-    if (has(st, "guard") && e.x < CFG.archerX + 0.14) e.hp -= 1;
-    if (e.hp <= 0) {
-      var i = st.enemies.indexOf(e);
-      if (i >= 0) st.enemies.splice(i, 1);
-      st.kills++;
-      var gain = CFG.soulPerKill + Math.floor(st.wave / 4);
-      st.souls += gain;
-      if (st.kills % 6 === 0) st.wave++;
-      st.pops.push({ t: 1.3, text: "+" + gain, x: e.x, d: e.d, h: 0.8, soul: true });
-      if (has(st, "explode")) {
-        var list = st.enemies.slice();
-        for (var j = 0; j < list.length; j++) {
-          var o = list[j];
-          if (Math.abs(o.x - e.x) < 0.22 && Math.abs(o.d - e.d) < 0.5) hitEnemy(st, o, Math.max(1, Math.round(dmg * 0.6)), false);
-        }
-        st.fx.push({ t: 0.5, kind: "boom", x: e.x, d: e.d, h: 0.4 });
-      }
-    }
+    st.pops.push({ t: 1, text: "-" + dmg, x: e.x, d: e.d, h: 0.55 });
+    if (e.hp <= 0) killEnemy(st, e, dmg);
   }
 
   function step(st, dt) {
     st.t += dt;
     if (st.invuln > 0) st.invuln -= dt;
     if (st.slack > 0) st.slack -= dt;
-    if (st.hp < st.maxHp && st.invuln <= 0) st.hp = Math.min(st.maxHp, st.hp + 0.18 * dt);
+    var regen = has(st, "bastion") ? 0.42 : 0.18;
+    if (st.hp < st.maxHp && st.invuln <= 0) st.hp = Math.min(st.maxHp, st.hp + regen * dt);
 
     st.spawnT -= dt;
     if (st.spawnT <= 0 && st.enemies.length < maxEnemies(st)) {
@@ -238,15 +251,18 @@
       spawn(st);
     }
 
-    var swayAmp = 0.12 + Math.min(0.5, st.wave * 0.012);   // 波数越高，横向走位越刁
+    var swayAmp = 0.12 + Math.min(0.5, st.wave * 0.012);
     var swayFreq = 0.9 + Math.min(2.2, st.wave * 0.06);
 
     for (var i = st.enemies.length - 1; i >= 0; i--) {
       var e = st.enemies[i];
       if (!e) continue;
       e.hit = Math.max(0, e.hit - dt * 4);
+      if (e.stun > 0) { e.stun -= dt; continue; }
+
+      var spd = e.speed * (has(st, "slowfield") && e.x < 0.58 ? 0.6 : 1);
       if (e.x > CFG.archerX + 0.10) {
-        e.x -= e.speed * dt;
+        e.x -= spd * dt;
         e.d += Math.sin(st.t * swayFreq + e.bob) * swayAmp * dt;
         if (e.d > 1) e.d = 1;
         if (e.d < -1) e.d = -1;
@@ -255,34 +271,89 @@
         if (e.atkCd <= 0) {
           e.atkCd = 1.7;
           if (st.invuln <= 0) {
-            st.hp -= 1;
-            st.fx.push({ t: 0.35, kind: "hurt" });
-            if (st.hp <= 0) {
-              st.hp = st.maxHp; st.invuln = CFG.retreatInvuln;
-              st.retreats++; st.wave = Math.max(1, st.wave - 1);
-              st.enemies.length = 0; st.arrows.length = 0;
-              st.fx.push({ t: 1.5, kind: "retreat" });
+            if (has(st, "dodge") && st.rand() < 0.20) {
+              st.fx.push({ t: 0.3, kind: "dodge" });
+            } else {
+              st.hp -= 1;
+              st.fx.push({ t: 0.35, kind: "hurt" });
+              if (has(st, "thorns")) hurt(st, e, Math.max(3, st.atk));
+              if (st.hp <= 0) {
+                st.retreats++;
+                st.wave = Math.max(1, st.wave - 1);
+                st.hp = st.maxHp;
+                st.invuln = CFG.retreatInvuln;
+                st.arrows.length = 0;
+                if (has(st, "immortal")) {
+                  st.fx.push({ t: 1.2, kind: "immortal" });
+                } else {
+                  st.enemies.length = 0;
+                  st.fx.push({ t: 1.5, kind: "retreat" });
+                }
+              }
             }
           }
         }
       }
     }
 
-    /* 自动瞄准 + 自动射击（打空多了会"弓弦松弛"停火） */
-    if (st.slack > 0) {
-      st.fireCd = Math.max(st.fireCd, 0.05);
-    } else {
+    /* 自动射击 */
+    if (st.slack > 0) st.fireCd = Math.max(st.fireCd, 0.05);
+    else {
       st.fireCd -= dt;
       if (st.fireCd <= 0) {
         var near = nearest(st);
         if (near) {
           var p = predict(st, near);
           fireAtPoint(st, p.x, p.d);
-          st.fireCd = CFG.autoEvery * (has(st, "rapid") ? 0.65 : 1);
+          var fast = has(st, "rapid") ? 0.65 : 1;
+          if (has(st, "combo") && st.comboHits >= 6) fast *= 0.85;
+          st.fireCd = CFG.autoEvery * fast;
         } else st.fireCd = 0.25;
       }
     }
 
+    /* 陷阱：绊索 */
+    if (has(st, "snare")) {
+      st.snareT -= dt;
+      if (st.snareT <= 0) {
+        st.snareT = 12;
+        var list2 = st.enemies.slice().sort(function (a, b) { return a.x - b.x; });
+        var n = has(st, "quake") ? 3 : 1;
+        for (var si = 0; si < Math.min(n, list2.length); si++) { list2[si].stun = has(st, "quake") ? 2.0 : 1.6; }
+        st.fx.push({ t: 0.5, kind: "snare" });
+      }
+    }
+
+    /* 伙伴：猎犬 */
+    if (has(st, "hound")) {
+      var hdog = st.hound;
+      var prey = nearest(st);
+      if (prey) {
+        hdog.x += (prey.x - 0.06 - hdog.x) * Math.min(1, dt * 3.2);
+        hdog.d += (prey.d - hdog.d) * Math.min(1, dt * 3.2);
+        hdog.bite += dt;
+        if (hdog.bite >= 1.5 && Math.abs(prey.x - hdog.x) < 0.12) {
+          hdog.bite = 0;
+          hurt(st, prey, Math.round(Math.max(4, st.atk * 2) * dmgMul(st)));
+          st.fx.push({ t: 0.3, kind: "bite", x: prey.x, d: prey.d });
+        }
+      }
+    }
+
+    /* 伙伴：猎鹰 */
+    if (has(st, "falcon")) {
+      st.falconT -= dt;
+      if (st.falconT <= 0) {
+        st.falconT = has(st, "queen") ? 3.6 : 5;
+        var count = has(st, "queen") ? 3 : 1;
+        for (var f2 = 0; f2 < count; f2++) {
+          var tg = st.enemies[Math.floor(st.rand() * Math.max(1, st.enemies.length))];
+          if (tg) { hurt(st, tg, Math.round(Math.max(10, st.atk * 2.2) * dmgMul(st))); st.fx.push({ t: 0.5, kind: "falcon", x: tg.x, d: tg.d }); }
+        }
+      }
+    }
+
+    /* 箭雨 */
     if (has(st, "rain")) {
       st.rainT -= dt;
       if (st.rainT <= 0) {
@@ -292,6 +363,22 @@
       }
     }
 
+    /* 火油地面 */
+    for (var fr = st.fires.length - 1; fr >= 0; fr--) {
+      var fire = st.fires[fr];
+      fire.life -= dt;
+      fire.tick += dt;
+      if (fire.tick >= 0.4) {
+        fire.tick = 0;
+        for (var ei = 0; ei < st.enemies.length; ei++) {
+          var en2 = st.enemies[ei];
+          if (Math.abs(en2.x - fire.x) < 0.12 && Math.abs(en2.d - fire.d) < 0.4) hurt(st, en2, 2);
+        }
+      }
+      if (fire.life <= 0) st.fires.splice(fr, 1);
+    }
+
+    /* 箭飞行 */
     for (var a = st.arrows.length - 1; a >= 0; a--) {
       var ar = st.arrows[a];
       if (!ar) continue;
@@ -309,7 +396,7 @@
         if (Math.abs(en.x - ar.x) < CFG.hitR && ar.y < 0.66 && ar.y > -0.03 && Math.abs(en.d - ar.d) < 0.4) { hit = en; break; }
       }
       if (hit) {
-        hitEnemy(st, hit, ar.dmg, ar.manual);
+        hurt(st, hit, ar.dmg);
         st.comboHits++; st.comboLast = st.t;
         st.missStreak = 0;
         if (ar.pierce && ar.hits < 2) { ar.hits++; ar.dmg = Math.max(1, Math.round(ar.dmg * 0.7)); continue; }
@@ -323,8 +410,8 @@
           st.comboHits = 0;
           st.misses++;
           st.missStreak++;
+          if (st.missStreak >= 5) { st.missStreak = 0; st.slack = CFG.slackPenalty; st.fx.push({ t: 0.6, kind: "slack" }); }
         }
-        if (st.missStreak >= 5) { st.missStreak = 0; st.slack = CFG.slackPenalty; st.fx.push({ t: 0.6, kind: "slack" }); }
       }
     }
 
@@ -774,20 +861,23 @@
 
   /* 树的位置（横屏 760×420）：按 tier 分层，layer 内左右分列 */
   var TREE_POS = {
-    atk:     [380, 70],
-    multi:   [215, 128],
-    rapid:   [545, 128],
-    pierce:  [150, 186],
-    combo:   [610, 186],
-    explode: [110, 244],
-    hawk:    [660, 244],
-    rain:    [130, 302],
-    archer2: [640, 302],
-    storm:   [250, 362],
-    guard:   [520, 362]
+    atk:      [380, 56],
+    multi:    [200, 104], rapid:   [560, 104],
+    pierce:   [140, 152], armor:   [300, 152], combo: [460, 152], slowfield: [660, 152],
+    explode:  [90, 200],  thorns:  [250, 200], hawk:  [510, 200], snare:     [690, 200],
+    oilfire:  [90, 248],  hound:   [250, 248], archer2:[510, 248], totem:    [690, 248],
+    rain:     [140, 296], bastion: [300, 296], falcon:[470, 296],
+    storm:    [90, 344],  immortal:[300, 344], queen: [470, 344], quake:     [690, 344]
   };
-  Game.NODE_W = 116;
-  Game.NODE_H = 48;
+  var BR_COLOR = {
+    spread:  "255,180,90",
+    speed:   "120,180,255",
+    trap:    "130,220,160",
+    survive: "200,150,235",
+    root:    "255,215,140"
+  };
+  Game.NODE_W = 104;
+  Game.NODE_H = 38;
 
   Game.talentRects = function () {
     var out = [];
@@ -809,7 +899,17 @@
     g.fillText("战 斗 天 赋", W / 2, 30);
     g.fillStyle = "rgba(200,220,245,0.55)";
     g.font = "700 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("只能按连线顺序解锁 · 当前 " + s.souls + " 魂 · 点按钮收起", W / 2, 48);
+    g.fillText("只能按连线顺序解锁 · 当前 " + s.souls + " 魂 · 点右上收起", W / 2, 46);
+    var legend = [["spread","散射/爆破"],["speed","疾风/伙伴"],["trap","陷阱/控场"],["survive","生存"]];
+    for (var lg = 0; lg < legend.length; lg++) {
+      g.fillStyle = "rgba(" + BR_COLOR[legend[lg][0]] + ",0.9)";
+      g.beginPath(); g.arc(60 + lg * 116, 62, 4, 0, 6.283); g.fill();
+      g.fillStyle = "rgba(220,225,235,0.65)";
+      g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.textAlign = "left";
+      g.fillText(legend[lg][1], 68 + lg * 116, 62);
+      g.textAlign = "center";
+    }
 
     // 连线
     for (var li = 0; li < list.length; li++) {
@@ -844,10 +944,11 @@
       if (!t) continue;
       var stt = B.talentState(s, t);
       var owned = stt === "owned";
-      rr(g, r.x, r.y, r.w, r.h, 9);
-      g.fillStyle = owned ? "rgba(120,200,150,0.2)" : (stt === "ready" ? "rgba(255,190,90,0.22)" : "rgba(255,255,255,0.035)");
+      var bc = BR_COLOR[t.br] || "255,215,140";
+      rr(g, r.x, r.y, r.w, r.h, 8);
+      g.fillStyle = owned ? "rgba(" + bc + ",0.26)" : (stt === "ready" ? "rgba(" + bc + ",0.14)" : "rgba(255,255,255,0.03)");
       g.fill();
-      g.strokeStyle = owned ? "rgba(140,220,170,0.65)" : (stt === "ready" ? "rgba(255,205,120,0.8)" : "rgba(255,255,255,0.1)");
+      g.strokeStyle = owned ? "rgba(" + bc + ",0.85)" : (stt === "ready" ? "rgba(" + bc + ",0.55)" : "rgba(255,255,255,0.1)");
       g.lineWidth = 1.2;
       rr(g, r.x, r.y, r.w, r.h, 9);
       g.stroke();
@@ -858,31 +959,31 @@
       }
 
       g.textAlign = "left";
-      g.fillStyle = owned ? "#c9f2d9" : (stt === "locked" ? "rgba(232,220,205,0.72)" : "#fff2dc");
-      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText(t.nm, r.x + 10, r.y + 16);
-      g.fillStyle = stt === "locked" ? "rgba(215,200,182,0.5)" : "rgba(226,212,194,0.78)";
-      g.font = "600 9px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText(t.desc.slice(0, 11), r.x + 10, r.y + 30);
-      if (t.desc.length > 11) g.fillText(t.desc.slice(11, 22), r.x + 10, r.y + 42);
+      g.fillStyle = owned ? "#f2fff5" : (stt === "locked" ? "rgba(232,220,205,0.72)" : "#fff2dc");
+      g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(t.nm, r.x + 8, r.y + 14);
+      g.fillStyle = stt === "locked" ? "rgba(215,200,182,0.5)" : "rgba(230,218,202,0.8)";
+      g.font = "600 8px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(t.desc.slice(0, 12), r.x + 8, r.y + 27);
+      if (t.desc.length > 12) g.fillText(t.desc.slice(12, 24), r.x + 8, r.y + 36);
 
       g.textAlign = "right";
       if (stt === "sealed") {
         g.fillStyle = "rgba(200,120,120,0.85)";
         g.font = "800 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText("已封闭", r.x + r.w - 9, r.y + 16);
+        g.fillText("已封闭", r.x + r.w - 8, r.y + 14);
       } else if (owned) {
         g.fillStyle = "rgba(140,220,170,0.9)";
         g.font = "800 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText(t.repeat ? "Lv" + (s.bought[t.id] || 1) : "已解锁", r.x + r.w - 9, r.y + 16);
+        g.fillText(t.repeat ? "Lv" + (s.bought[t.id] || 1) : "已解锁", r.x + r.w - 8, r.y + 14);
       } else if (stt === "locked") {
         g.fillStyle = "rgba(220,205,185,0.35)";
         g.font = "700 9px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText("需前置", r.x + r.w - 9, r.y + 16);
+        g.fillText("需前置", r.x + r.w - 8, r.y + 14);
       } else {
         g.fillStyle = stt === "ready" ? "#ffd24a" : "rgba(220,200,180,0.42)";
         g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
-        g.fillText(B.talentCost(s, t) + " 魂", r.x + r.w - 9, r.y + 16);
+        g.fillText(B.talentCost(s, t) + " 魂", r.x + r.w - 8, r.y + 14);
       }
     }
   };
