@@ -57,11 +57,11 @@
         effect: function (s) { s.autoRate += 2.5; }
       },
       {
-        id: "gloves", nm: "厚手套", tip: "手动每块 +3（自动 -10%）",
-        baseCost: 420, growth: 1.22, tier: 1,
-        req: function (s) { return (s.bought.pick || 0) >= 5; },
-        reqText: "需 5 把镐",
-        effect: function (s) { s.tapPower += 3; s.autoRate *= 0.9; }
+        id: "regen", nm: "矿脉再生", tip: "矿长得更快：-15% 等待",
+        baseCost: 120, growth: 1.9, tier: 1,
+        req: function (s) { return (s.bought.pick || 0) >= 3; },
+        reqText: "需 3 把镐",
+        effect: function (s) { s.regenEvery = Math.max(0.18, s.regenEvery * 0.85); }
       }
     ];
   }
@@ -448,7 +448,7 @@
       autoForge: 0, weaponDmg: 0, autoFeed: 0,
       vein: null, veinT: 8, veinLife: 0,
       lastVein: 0, veins: 0,
-      field: [], regenT: 0, regenEvery: 1.15, autoAcc: 0, mined: 0, goldMined: 0,
+      field: [], regenT: 0, regenEvery: 0.62, forceT: 0, autoAcc: 0, mined: 0, goldMined: 0,
       chips: [], pops: [],
       rand: (function (s0) {
         var x = (seed || 12345) >>> 0;
@@ -560,9 +560,22 @@
   /* 点第 i 块矿 */
   function mineAt(st, i) {
     if (st.chestFx && st.chestFx.t > 0) st.chestFx.t = 0;
+    var cell0 = st.field[i];
+    if (cell0 && cell0.k === 0) {
+      // 空坑：凿碎渣，给一点点，永远不会"点了没反应"
+      var dust = Math.max(1, Math.floor(st.tapPower * 0.15));
+      st.ore += dust; st.total += dust;
+      st.pops.push({
+        v: dust, t: 0.7, dust: true,
+        x: (i % FIELD_COLS + 0.5) / FIELD_COLS,
+        y: (Math.floor(i / FIELD_COLS) + 0.5) / FIELD_ROWS
+      });
+      return dust;
+    }
     var v = mineCell(st, i);
     if (v > 0) {
       st.taps++;
+      if (blocksLeft(st) < 3) regenTick(st);     // 边挖边长，手上永远有矿
       // 连点爆破：每连 5 次多爆一次
       if (hasTalent(st, "t_burst")) {
         st.burstC++;
@@ -639,6 +652,11 @@
     // 矿块再生
     st.regenT += dt;
     if (st.regenT >= st.regenEvery) { st.regenT = 0; regenTick(st); }
+    // 保底：永远留至少 8 块，不让玩家"无事可挖"
+    if (blocksLeft(st) < 8) {
+      st.forceT += dt;
+      if (st.forceT >= 0.28) { st.forceT = 0; regenTick(st); }
+    } else st.forceT = 0;
 
     // 矿车/自动镐：自己挖同一片矿（会和手抢）
     if (st.autoRate > 0) {
@@ -1071,8 +1089,8 @@
     for (var p = 0; p < s.pops.length; p++) {
       var pop = s.pops[p];
       g.globalAlpha = Math.min(1, pop.t);
-      g.fillStyle = pop.big ? "#ffd24a" : (pop.auto ? "rgba(150,220,170,0.95)" : "#fff0d0");
-      g.font = (pop.big ? "800 20px " : "800 14px ") + "-apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillStyle = pop.big ? "#ffd24a" : (pop.dust ? "rgba(190,175,155,0.75)" : (pop.auto ? "rgba(150,220,170,0.95)" : "#fff0d0"));
+      g.font = (pop.big ? "800 20px " : (pop.dust ? "700 10px " : "800 14px ")) + "-apple-system,Segoe UI,Roboto,sans-serif";
       g.textAlign = "center";
       g.fillText("+" + fmt(pop.v), r.x + r.w * pop.x, r.y + r.h * pop.y);
       g.globalAlpha = 1;
@@ -1092,11 +1110,11 @@
     g.fillStyle = "rgba(255,214,150,0.75)";
     g.font = "700 10px -apple-system,Segoe UI,Roboto,sans-serif";
     g.fillText("矿块 " + leftN + "/" + s.field.length + (M.goldLeft(s) > 0 ? " · 金 " + M.goldLeft(s) : ""), r.x + 2, r.y - 10);
-    if (leftN === 0) {
+    if (leftN <= 8) {
       g.textAlign = "center";
-      g.fillStyle = "rgba(255,190,120,0.9)";
-      g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("挖空了 · 矿在慢慢长回来…", r.x + r.w / 2, r.y + r.h / 2);
+      g.fillStyle = "rgba(255,200,130," + (0.55 + Math.sin(s.t * 3) * 0.2) + ")";
+      g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("矿快挖空了 · 每 " + s.regenEvery.toFixed(2) + " 秒长回一块", r.x + r.w / 2, r.y + r.h - 12);
     }
 
     /* ---------- 熔炉 ---------- */
@@ -1249,7 +1267,7 @@
       g.fillStyle = "#ffd24a";
       g.font = "800 15px -apple-system,Segoe UI,Roboto,sans-serif";
       g.textAlign = "center";
-      g.fillText("+" + fx.v + " 矿", L.x + L.w - 96, L.y + 11);
+      g.fillText("+" + fx.v + " 矿", L.x + L.w - 12, L.y + 11);
       g.globalAlpha = 1;
     }
 
@@ -1260,7 +1278,7 @@
       g.textAlign = "center";
       g.fillStyle = "#ffd98a";
       g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("开出：" + s.chestFx.nm, L.x + L.w - 12, L.y + 35);
+      g.fillText("开出：" + s.chestFx.nm, L.x + L.w - 12, L.y + 36);
       g.globalAlpha = 1;
     }
 
@@ -1271,6 +1289,8 @@
       g.fillStyle = "#b8e0ff";
       g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
       g.fillText("掉落：" + s.dropFx.nm, L.x + L.w - 12, L.y + 23);
+      g.fillStyle = "rgba(180,215,255,0.55)";
+      g.font = "600 9px -apple-system,Segoe UI,Roboto,sans-serif";
       g.globalAlpha = 1;
     }
 
@@ -1287,7 +1307,7 @@
     g.fillText("· " + stTxt, L.x + 12 + g.measureText("第 " + s.depth + " 层").width + 4, L.y + 11);
     g.fillStyle = "rgba(200,220,210,0.45)";
     g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("最高 " + s.runBest + " 层 · 打不动自动退一层继续刷", L.x + 12, L.y + 23);
+    g.fillText("最高 " + s.runBest + " 层", L.x + 12, L.y + 23);
 
     // 撤离/结算按钮在打造按钮同一行（下面绘制）
 
@@ -1503,7 +1523,7 @@
       g.stroke();
 
       g.textAlign = "left";
-      g.fillStyle = locked ? "rgba(200,180,160,0.45)" : (can ? "#fff4e2" : "rgba(230,210,190,0.72)");
+      g.fillStyle = locked ? "rgba(215,200,180,0.66)" : (can ? "#fff4e2" : "rgba(238,222,205,0.82)");
       g.font = "800 13px -apple-system,Segoe UI,Roboto,sans-serif";
       g.fillText(node.nm, card.x + 12, card.y + 16);
       if (owned > 0) {
@@ -1518,7 +1538,7 @@
       g.textAlign = "right";
       g.font = "800 12px -apple-system,Segoe UI,Roboto,sans-serif";
       if (locked) {
-        g.fillStyle = "rgba(200,180,160,0.4)";
+        g.fillStyle = "rgba(255,205,140,0.6)";
         g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
         g.fillText(node.reqText || "锁定", card.x + card.w - 12, card.y + 23);
       } else if (can) {
