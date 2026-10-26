@@ -93,86 +93,132 @@
   }
 
   var MERC = {
-    walk: 2.0,          // 出门走到怪物前
-    back: 1.6,          // 打赢回来
-    swingEvery: 1.3,    // 每 1.3 秒砍一刀
-    fightLimit: 18,     // 打超过 18 秒算撤退
-    baseHp: 24, hpPerKill: 14,
+    walk: 2.0,
+    back: 1.6,
+    swingEvery: 1.3,
+    fightLimit: 18,
     dmgPerWeapon: 4,
     lootBase: 6, lootPerWeapon: 3
   };
 
+  /* ============ 装备：每件都是一条"规则" ============ */
   var ITEMS = {
-    twin:   { nm: "双刃剑", slot: "sword",  tag: "双刃",   desc: "每挥一次砍两刀", mul: 2 },
-    pierce: { nm: "破甲剑", slot: "sword",  tag: "破甲",   desc: "深处怪物伤害 +60%", mul: 1.6 },
-    wind:   { nm: "疾风靴", slot: "boots",  tag: "疾风",   desc: "挥砍间隔 -40%", mul: 0.6 },
-    swift:  { nm: "赶路靴", slot: "boots",  tag: "赶路",   desc: "路上时间减半，下探更快", mul: 0.5 },
-    greed:  { nm: "贪婪符", slot: "amulet", tag: "贪婪",   desc: "战利品 +80%", mul: 1.8 },
-    crit:   { nm: "暴击符", slot: "amulet", tag: "暴击",   desc: "25% 概率打出 3 倍", mul: 3 }
+    chain: {
+      nm: "连锁剑", slot: "sword", tag: "连锁",
+      desc: "击杀后不回城，直接扑下一只",
+      rule: "推进最快，但没有回城喘息，容易一头撞穿自己的极限"
+    },
+    knock: {
+      nm: "击退剑", slot: "sword", tag: "击退",
+      desc: "不再往深处走，原地反复刷同一层",
+      rule: "层数不升，但战利品 ×2.5 —— 用深度换钱"
+    },
+    sacrifice: {
+      nm: "献祭剑", slot: "sword", tag: "献祭",
+      desc: "每刀烧 8 矿，伤害 ×3",
+      rule: "矿就是弹药，矿断了就砍不动"
+    },
+    split: {
+      nm: "分裂符", slot: "amulet", tag: "分裂",
+      desc: "怪物死后裂成 2 只小怪，各掉一份",
+      rule: "掉落翻倍，但同一层要多打两轮"
+    },
+    echo: {
+      nm: "回响符", slot: "amulet", tag: "回响",
+      desc: "击杀后 40% 概率影子佣兵立刻再打一只",
+      rule: "节奏爆发：不用走路就连着杀"
+    },
+    hoard: {
+      nm: "守财符", slot: "amulet", tag: "守财",
+      desc: "打不动时不退层，原地挂着刷",
+      rule: "挂机专用：不会被弹回去，战利品 +50%"
+    },
+    cart: {
+      nm: "矿车靴", slot: "boots", tag: "运矿",
+      desc: "走路的时候也在挖矿",
+      rule: "把空转的路上时间变成矿（按层数结算）"
+    },
+    combo: {
+      nm: "连击靴", slot: "boots", tag: "连击",
+      desc: "连杀不断档，每 3 连杀下一刀翻倍",
+      rule: "越顺越强，被打断就归零"
+    }
   };
   var SLOT_NM = { sword: "剑", amulet: "护符", boots: "靴" };
+  var DROP_POOL = ["chain", "knock", "sacrifice", "split", "echo", "hoard", "cart", "combo"];
 
-  function monsterHp(st) { return 18 + 11 * st.depth; }
+  function monsterHp(st, scale) { return Math.round((18 + 11 * st.depth) * (scale || 1)); }
 
-  /* 装备词条汇总 */
+  /* 把三个槽位的规则汇总成一组开关 */
   function gear(st) {
-    var g = { swings: 1, interval: MERC.swingEvery, lootMul: 1, crit: 0, walkMul: 1, pierce: false };
-    var keys = ["sword", "amulet", "boots"];
-    for (var i = 0; i < keys.length; i++) {
-      var it = st.slots[keys[i]];
-      if (!it) continue;
-      if (it === "twin") g.swings = 2;
-      if (it === "pierce") g.pierce = true;
-      if (it === "wind") g.interval *= 0.6;
-      if (it === "swift") g.walkMul *= 0.5;
-      if (it === "greed") g.lootMul *= 1.8;
-      if (it === "crit") g.crit = 0.25;
+    var g = {
+      instant: false,      // 不回城
+      noAdvance: false,    // 不推层
+      sacrifice: false,    // 用矿当弹药
+      split: false,        // 死后分裂
+      echo: false,         // 影子佣兵
+      hoard: false,        // 不退层
+      cartMine: false,     // 走路产矿
+      combo: false         // 连杀加成
+    };
+    for (var k in st.slots) {
+      var id = st.slots[k];
+      if (!id) continue;
+      if (id === "chain") g.instant = true;
+      if (id === "knock") g.noAdvance = true;
+      if (id === "sacrifice") g.sacrifice = true;
+      if (id === "split") g.split = true;
+      if (id === "echo") g.echo = true;
+      if (id === "hoard") g.hoard = true;
+      if (id === "cart") g.cartMine = true;
+      if (id === "combo") g.combo = true;
     }
     return g;
   }
 
-  /* 掉落：深度越深，越可能出装备 */
+  function makeItem(st, id) {
+    var t = ITEMS[id];
+    return { id: id, nm: t.nm, slot: t.slot, tag: t.tag, desc: t.desc, rule: t.rule, depth: st.depth };
+  }
+
+  /* 掉落：深度越深越容易出，出的是"机制"不是"数值" */
   function rollDrop(st) {
-    var chance = Math.min(0.75, 0.22 + st.depth * 0.045);
+    var chance = Math.min(0.8, 0.24 + st.depth * 0.05);
     if (st.rand() > chance) return null;
-    var pool = ["twin", "pierce", "wind", "swift", "greed", "crit"];
-    var id = pool[Math.floor(st.rand() * pool.length)];
-    var it = { id: id, nm: ITEMS[id].nm, slot: ITEMS[id].slot, tag: ITEMS[id].tag, desc: ITEMS[id].desc, depth: st.depth };
-    // 优先塞进空槽，否则进背包（背包最多 4 件，满了顶掉最旧的）
-    var slotKey = ITEMS[id].slot;
-    if (!st.slots[slotKey]) { st.slots[slotKey] = id; }
-    else {
+    var id = DROP_POOL[Math.floor(st.rand() * DROP_POOL.length)];
+    var it = makeItem(st, id);
+    var slotKey = it.slot;
+    if (!st.slots[slotKey]) {
+      st.slots[slotKey] = id;
+      it.equipped = true;
+    } else if (st.bag.length < 8) {
       st.bag.push(it);
-      if (st.bag.length > 4) st.bag.shift();
+    } else {
+      var refund = 40 + 12 * st.depth;
+      st.ore += refund; st.total += refund;
+      it.recycled = refund;
+      st.dropFx = { t: 1.6, nm: it.nm + "（重复，熔成 " + refund + " 矿）", tag: "" };
     }
     return it;
   }
 
-  /* 穿上背包里第 i 件（换掉同槽位的旧装备） */
+  /* 穿上背包第 i 件；旧的换回背包（永不丢失） */
   function equip(st, i) {
     var it = st.bag[i];
     if (!it) return false;
     var old = st.slots[it.slot];
     st.slots[it.slot] = it.id;
     st.bag.splice(i, 1);
-    if (old) st.bag.push({ id: old, nm: ITEMS[old].nm, slot: ITEMS[old].slot, tag: ITEMS[old].tag, desc: ITEMS[old].desc, depth: 0 });
+    if (old) st.bag.push(makeItem(st, old));
     return true;
   }
 
-  /* 撤离：结算矿，清空本局装备，层数归 1 */
+  /* 兼容旧调用 */
   function withdraw(st) {
-    var bonus = st.depth * 6;
-    st.ore += bonus; st.total += bonus;
     if (st.depth > st.runBest) st.runBest = st.depth;
-    st.runs++;
-    st.slots = { sword: null, amulet: null, boots: null };
-    st.bag = [];
-    st.depth = 1;
-    st.merc.phase = "out"; st.merc.t = 0; st.merc.hp = 0; st.merc.maxHp = 0;
-    return bonus;
+    return 0;
   }
 
-  /* 打造一把武器：花锭，价格递增 */
   function forgeCost(st) { return Math.max(1, Math.floor(1 * Math.pow(1.28, st.weapons))); }
   function canForge(st) { return st.ingot >= forgeCost(st); }
   function forge(st) {
@@ -182,46 +228,113 @@
     return true;
   }
 
-  /* 佣兵状态机：out(出门) → fight(打) → back(回来) → out ... 全自动 */
-  function stepMerc(st, dt) {
+  function lootOf(st, g, scale) {
+    var base = (MERC.lootBase + MERC.lootPerWeapon * st.weapons) * (1 + st.depth * 0.08);
+    var mul = 1;
+    if (g.noAdvance) mul *= 2.5;          // 击退剑：不推层，钱多
+    if (g.hoard && st.stuck) mul *= 1.5;  // 守财符：卡住了也照赚
+    if (scale) mul *= scale;              // 分裂出来的小怪
+    return Math.max(1, Math.round(base * mul));
+  }
+
+  function startFight(st, scale) {
     var m = st.merc;
+    m.phase = "fight";
+    m.t = 0;
+    m.maxHp = monsterHp(st, scale);
+    m.hp = m.maxHp;
+    m.dmgT = 0;
+    m.scale = scale || 1;
+  }
+
+  function killMonster(st, m, g) {
+    var loot = lootOf(st, g, m.scale < 1 ? 0.6 : 1);
+    st.ore += loot; st.total += loot;
+    st.kills++;
+    m.lastLoot = loot;
+    if (g.combo) st.combo++; else st.combo = 0;
+    st.stuck = 0;
+
+    // 分裂符：先处理小怪，再考虑推层
+    if (g.split && !(m.scale < 1)) {
+      st.minisLeft += 2;
+    }
+
+    var got = rollDrop(st);
+    if (got) st.dropFx = { t: 1.6, nm: got.nm, tag: got.tag + (got.equipped ? " · 已装备" : "") };
+
+    if (st.minisLeft > 0) {                    // 打分裂出来的小怪，不推层
+      st.minisLeft--;
+      startFight(st, 0.5);
+      m.phase = "fight";
+      return;
+    }
+
+    if (!g.noAdvance) st.depth++;
+    if (st.depth > st.runBest) st.runBest = st.depth;
+
+    // 连锁剑 / 回响符：不回城，直接下一只
+    if (g.instant || (g.echo && st.rand() < 0.4)) {
+      m.phase = "out"; m.t = 999;              // 下一帧直接接战
+    } else {
+      m.phase = "back"; m.t = 0; m.hp = 0;
+    }
+  }
+
+  /* 佣兵状态机：out → fight → back → out */
+  function stepMerc(st, dt) {
+    var m = st.merc, g = gear(st);
     m.anim += dt;
+
     if (m.phase === "out") {
+      // 矿车靴：路上时间也在产矿
+      if (g.cartMine) {
+        var gained = 2 * st.depth * dt;
+        st.ore += gained; st.total += gained;
+      }
       m.t += dt;
-      if (m.t >= MERC.walk * gear(st).walkMul) { m.phase = "fight"; m.t = 0; m.maxHp = monsterHp(st); m.hp = m.maxHp; m.dmgT = 0; }
+      if (m.t >= MERC.walk) startFight(st, 1);
     } else if (m.phase === "fight") {
       m.t += dt;
       m.dmgT += dt;
       m.swing = Math.max(0, m.swing - dt * 3);
-      var gr = gear(st);
-      if (m.dmgT >= gr.interval) {
+
+      if (m.dmgT >= MERC.swingEvery) {
         m.dmgT = 0;
         m.swing = 1;
-        var base = st.weapons * (MERC.dmgPerWeapon + st.weaponDmg);
-        var dealt = base * gr.swings;
-        if (gr.crit > 0 && st.rand() < gr.crit) dealt *= 3;
-        if (gr.pierce && st.depth >= 4) dealt *= 1.6;
+        var base = st.weapons * MERC.dmgPerWeapon;
+        if (g.combo && st.combo >= 3) base *= 2;
+        var dealt = base;
+
+        if (g.sacrifice) {
+          if (st.ore >= 8) { st.ore -= 8; dealt *= 3; st.sacFx = 1; }
+          else { st.sacFx = -1; }                // 矿不够：退回普通伤害，不卡死
+        }
         dealt = Math.round(dealt);
-        m.hp -= dealt;
-        st.hitFx.push({ t: 1, d: dealt });
-        if (m.hp <= 0) {
-          var gg = gear(st);
-          var loot = Math.round((MERC.lootBase + MERC.lootPerWeapon * st.weapons) * gg.lootMul * (1 + st.depth * 0.08));
-          st.ore += loot; st.total += loot;
-          st.kills++;
-          m.lastLoot = loot;
-          if (st.depth > st.runBest) st.runBest = st.depth;
-          var got = rollDrop(st);
-          if (got) st.dropFx = { t: 1.6, nm: got.nm, tag: got.tag };
-          st.depth++;
-          m.phase = "back"; m.t = 0; m.hp = 0;
+        if (dealt > 0) {
+          m.hp -= dealt;
+          st.hitFx.push({ t: 1, d: dealt });
+        }
+        if (m.hp <= 0) killMonster(st, m, g);
+      }
+
+      if (m.phase === "fight" && m.t > MERC.fightLimit) {
+        st.retreats++;
+        if (g.hoard) {
+          st.stuck = 1;                          // 守财符：就地挂着刷
+          m.t = 0;
+          m.hp = m.maxHp;
+        } else {
+          st.blockedAt = Math.max(st.blockedAt, st.depth);
+          st.depth = Math.max(1, st.depth - 1);
+          m.phase = "back"; m.t = 0;
         }
       }
-      if (m.phase === "fight" && m.t > MERC.fightLimit) {   // 打不动 → 本局结束，结算并重置
-        st.retreats++;
-        withdraw(st);
-      }
     } else if (m.phase === "back") {
+      if (g.cartMine) {
+        var g2 = 2 * st.depth * dt;
+        st.ore += g2; st.total += g2;
+      }
       m.t += dt;
       if (m.t >= MERC.back) { m.phase = "out"; m.t = 0; }
     }
@@ -236,8 +349,9 @@
       weapons: 0, kills: 0, retreats: 0,
       merc: { phase: "out", t: 0, hp: 0, maxHp: 0, swing: 0, dmgT: 0, lastLoot: 0, anim: 0 },
       hitFx: [],
-      depth: 1, runBest: 1, runs: 0,
+      depth: 1, runBest: 1, runs: 0, blockedAt: 1,
       slots: { sword: null, amulet: null, boots: null },
+      combo: 0, minisLeft: 0, stuck: 0, sacFx: 0,
       bag: [],                 // 本局未装备的掉落
       dropFx: null,
       furnace: { queue: 0, prog: 0, time: 4.0, batch: 10, ratio: 10, smelted: 0, heat: 0 },
@@ -373,6 +487,7 @@
     }
 
     if (st.dropFx) { st.dropFx.t -= dt; if (st.dropFx.t <= 0) st.dropFx = null; }
+    if (st.sacFx) { st.sacFx = 0; }
 
     // 粒子 / 飘字
     var i;
@@ -455,12 +570,12 @@
   Game.WITHDRAW = { x: 256, y: 420, w: 120, h: 30 };
   Game.SLOTS = function () {
     var out = [], w = (W - 48 - 12) / 3;
-    for (var i = 0; i < 3; i++) out.push({ i: i, x: 24 + i * (w + 6), y: 490, w: w, h: 58 });
+    for (var i = 0; i < 3; i++) out.push({ i: i, x: 24 + i * (w + 6), y: 486, w: w, h: 54 });
     return out;
   };
   Game.BAGROWS = function () {
     var out = [];
-    for (var i = 0; i < 4; i++) out.push({ i: i, x: 24, y: 574 + i * 34, w: W - 48, h: 30 });
+    for (var i = 0; i < 4; i++) out.push({ i: i, x: 24, y: 578 + i * 33, w: W - 48, h: 29 });
     return out;
   };
   Game.CARDS = function () {
@@ -863,7 +978,7 @@
     g.fillText("· " + stTxt, L.x + 12 + g.measureText("第 " + s.depth + " 层").width + 4, L.y + 13);
     g.fillStyle = "rgba(200,220,210,0.45)";
     g.font = "600 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("已通关最深 " + s.runBest + " 层", L.x + 12, L.y + 27);
+    g.fillText("最高到过 " + s.runBest + " 层 · 打不动会自动退一层继续刷", L.x + 12, L.y + 27);
 
     // 撤离/结算按钮在打造按钮同一行（下面绘制）
 
@@ -886,22 +1001,13 @@
     g.fillStyle = canF ? "#ffd24a" : "rgba(220,200,180,0.4)";
     g.fillText(M.forgeCost(s) + " 锭", fgx.x + fgx.w - 12, fgx.y + fgx.h / 2);
 
-    // 撤离（本局结算，装备清空重来）
-    var wbx = Game.WITHDRAW;
-    rr(g, wbx.x, wbx.y, wbx.w, wbx.h, 9);
-    g.fillStyle = "rgba(255,150,90,0.16)";
-    g.fill();
-    g.strokeStyle = "rgba(255,170,110,0.6)";
-    g.lineWidth = 1.2;
-    rr(g, wbx.x, wbx.y, wbx.w, wbx.h, 9);
-    g.stroke();
-    g.textAlign = "center";
-    g.fillStyle = "#ffd0a8";
-    g.font = "800 11.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("撤离结算", wbx.x + wbx.w / 2, wbx.y + 11);
-    g.fillStyle = "rgba(255,200,150,0.75)";
-    g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
-    g.fillText("+" + s.depth * 6 + " 矿 · 换新装备", wbx.x + wbx.w / 2, wbx.y + 23);
+    // 打不动的提示
+    if (s.blockedAt >= s.depth && s.retreats > 0 && s.depth <= s.blockedAt) {
+      g.textAlign = "right";
+      g.fillStyle = "rgba(255,150,120,0.75)";
+      g.font = "700 9.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText("卡住了？多打武器 / 换装备再往上", fgx.x + fgx.w - 74, fgx.y + fgx.h / 2);
+    }
 
     /* ---------- 页签 ---------- */
     var tabs = Game.TABS, labels = ["矿石", "铁锭", "装备"];
@@ -950,11 +1056,19 @@
         }
       }
 
+      // 现役 build 摘要
+      var tags = [];
+      for (var ki = 0; ki < 3; ki++) { var eqid = s.slots[keys[ki]]; if (eqid) tags.push(M.ITEMS[eqid].tag); }
+      g.textAlign = "center";
+      g.fillStyle = "rgba(255,214,120,0.85)";
+      g.font = "800 10.5px -apple-system,Segoe UI,Roboto,sans-serif";
+      g.fillText(tags.length ? "现役 build：" + tags.join(" · ") : "还没有装备 —— 打赢就会掉", W / 2, 552);
+
       var rows2 = Game.BAGROWS();
       g.textAlign = "left";
       g.fillStyle = "rgba(190,215,245,0.7)";
       g.font = "800 10px -apple-system,Segoe UI,Roboto,sans-serif";
-      g.fillText("背包 · 点一行就换上（空槽会自动穿）", 24, 562);
+      g.fillText("背包 · 永久保留，点一行换上（满了自动炼成矿）", 24, 567);
 
       for (var bi = 0; bi < rows2.length; bi++) {
         var row = rows2[bi], item = s.bag[bi];
