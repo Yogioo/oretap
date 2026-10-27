@@ -20,6 +20,7 @@
 <div id="stage"><canvas id="game" width="760" height="420"></canvas></div>
 <div id="rotate">请横过手机 ⟳</div>
 <script>
+window.__ARCHER_SRC = 'data:image/png;base64,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';
 /* ==== src/battle.js ==== */
 /* 《敲矿·弓》v15 —— 天赋树扩到 21 个节点、五条支线，为"build"服务
    支线：散射 / 疾风 / 陷阱 / 伙伴 / 生存，两条主干在 T1 互斥（散射 vs 疾风），
@@ -99,6 +100,7 @@
       spawnT: 1.0, fireCd: 0.8, rainT: 9, snareT: 12, falconT: 5, houndT: 0,
       comboHits: 0, comboLast: 0,
       remanArrows: 0, remanHits: 0, chainPeak: 0, chainNow: 0, groundPeak: 0,
+      lastShot: -9, lastHurt: -9, hurtFlash: 0,
       talents: {}, bought: {}, atk: CFG.atkBase, forks: {},
       hound: { x: 0.30, d: 0.0, target: null, bite: 0 },
       markBonus: 0,
@@ -189,6 +191,7 @@
 
     st.arrows.push({ x: sx, y: sy, d: sd, vx: s.vx, vy: s.vy, vd: (td - sd) / s.t, dmg: dmg, life: 3.5, trail: [], hits: 0, pierce: has(st, "pierce"), manual: !!manual, area: !!area });
     st.shots++;
+    st.lastShot = st.t;
 
     if (has(st, "multi")) {
       var list = st.enemies.slice().sort(function (a, b) { return a.x - b.x; });
@@ -257,6 +260,7 @@
     st.t += dt;
     if (st.invuln > 0) st.invuln -= dt;
     if (st.slack > 0) st.slack -= dt;
+    if (st.hurtFlash > 0) st.hurtFlash = Math.max(0, st.hurtFlash - dt * 2.2);
     var regen = has(st, "bastion") ? 0.42 : 0.18;
     if (st.hp < st.maxHp && st.invuln <= 0) st.hp = Math.min(st.maxHp, st.hp + regen * dt);
 
@@ -290,6 +294,8 @@
               st.fx.push({ t: 0.3, kind: "dodge" });
             } else {
               st.hp -= 1;
+              st.lastHurt = st.t;
+              st.hurtFlash = 1;
               st.fx.push({ t: 0.35, kind: "hurt" });
               if (has(st, "thorns")) hurt(st, e, Math.max(3, st.atk));
               if (st.hp <= 0) {
@@ -543,11 +549,76 @@
   function unprojX(px) { return (px - FIELD.x - PAD) / (FIELD.w - PAD * 2); }
   function unprojD(py) { return Math.max(-0.95, Math.min(0.95, (GROUND - py) / 46)); }
 
+  var AC = null;
+  function sfx(kind) {
+    try {
+      if (!AC) {
+        var Ctx = root.AudioContext || root.webkitAudioContext;
+        if (!Ctx) return;
+        AC = new Ctx();
+      }
+      if (AC.state === "suspended") AC.resume();
+      var t0 = AC.currentTime;
+      var o = AC.createOscillator(), gn = AC.createGain();
+      o.connect(gn); gn.connect(AC.destination);
+      if (kind === "draw") {
+        o.type = "triangle"; o.frequency.setValueAtTime(320, t0);
+        o.frequency.exponentialRampToValueAtTime(520, t0 + 0.12);
+        gn.gain.setValueAtTime(0.05, t0); gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
+        o.start(t0); o.stop(t0 + 0.15);
+      } else if (kind === "shot") {
+        o.type = "sawtooth"; o.frequency.setValueAtTime(680, t0);
+        o.frequency.exponentialRampToValueAtTime(180, t0 + 0.1);
+        gn.gain.setValueAtTime(0.07, t0); gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.11);
+        o.start(t0); o.stop(t0 + 0.12);
+      } else if (kind === "hit") {
+        o.type = "square"; o.frequency.setValueAtTime(150, t0);
+        o.frequency.exponentialRampToValueAtTime(80, t0 + 0.09);
+        gn.gain.setValueAtTime(0.05, t0); gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.1);
+        o.start(t0); o.stop(t0 + 0.11);
+      } else if (kind === "hurt") {
+        o.type = "sine"; o.frequency.setValueAtTime(110, t0);
+        o.frequency.exponentialRampToValueAtTime(55, t0 + 0.22);
+        gn.gain.setValueAtTime(0.12, t0); gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.24);
+        o.start(t0); o.stop(t0 + 0.25);
+      } else if (kind === "spring") {
+        o.type = "triangle"; o.frequency.setValueAtTime(880, t0);
+        o.frequency.exponentialRampToValueAtTime(1320, t0 + 0.07);
+        gn.gain.setValueAtTime(0.045, t0); gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+        o.start(t0); o.stop(t0 + 0.1);
+      }
+    } catch (e) {}
+  }
+
+  var heroImg = null, heroRed = null;
+  function loadHero() {
+    if (!root.__ARCHER_SRC) return;
+    var im = new Image();
+    im.onload = function () {
+      heroImg = im;
+      try {
+        var cv = document.createElement("canvas");
+        cv.width = im.width; cv.height = im.height;
+        var c2 = cv.getContext("2d");
+        c2.drawImage(im, 0, 0);
+        c2.globalCompositeOperation = "source-atop";
+        c2.fillStyle = "rgba(255,70,50,0.85)";
+        c2.fillRect(0, 0, cv.width, cv.height);
+        heroRed = cv;
+      } catch (e) {}
+    };
+    im.src = root.__ARCHER_SRC;
+  }
+  loadHero();
+
   function Game(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.st = B.newState((Date.now() % 99991) + 5);
     this.aim = null;
+    this.lastSfxShot = -9;
+    this.lastSfxHurt = -9;
+    this.shake = 0;
   }
 
   Game.FIELD = FIELD;
@@ -585,8 +656,15 @@
   };
 
   Game.prototype.update = function (dt) {
-    B.step(this.st, dt);
+    var s = this.st;
+    B.step(s, dt);
     if (this.aim) { this.aim.t -= dt; if (this.aim.t <= 0) this.aim = null; }
+    if (s.lastShot !== this.lastSfxShot && s.t - s.lastShot < 0.1) { sfx("shot"); this.lastSfxShot = s.lastShot; }
+    if (s.lastHurt !== this.lastSfxHurt && s.t - s.lastHurt < 0.1) {
+      sfx("hurt"); this.lastSfxHurt = s.lastHurt; this.shake = 0.35;
+    }
+    if (s.remanHits > (this.lastReman || 0)) { sfx("spring"); this.lastReman = s.remanHits; }
+    if (this.shake > 0) this.shake -= dt;
   };
 
   Game.prototype.draw = function () {
@@ -599,7 +677,13 @@
     g.fillStyle = bg;
     g.fillRect(0, 0, W, H);
 
+    g.save();
+    if (this.shake > 0) {
+      var sh2 = this.shake * 10;
+      g.translate((Math.random() - 0.5) * sh2, (Math.random() - 0.5) * sh2 * 0.6);
+    }
     this.drawScene(g, s);
+    g.restore();
     this.drawHud(g, s);
 
     // 落点提示
@@ -635,6 +719,14 @@
     // 箭毯（画在敌人之上，保证不被挡）
     for (i = 0; i < s.groundArrows.length; i++) this.drawLatticeArrow(g, s.groundArrows[i], s);
     for (i = 0; i < s.fx.length; i++) this.drawFx(g, s.fx[i]);
+
+    if (s.hurtFlash > 0.01) {
+      var hv = g.createRadialGradient(W / 2, H / 2, H * 0.28, W / 2, H / 2, H * 0.72);
+      hv.addColorStop(0, "rgba(200,40,30,0)");
+      hv.addColorStop(1, "rgba(200,40,30," + (0.42 * s.hurtFlash) + ")");
+      g.fillStyle = hv;
+      g.fillRect(0, 0, W, H);
+    }
 
     if (s.invuln > 0) {
       g.fillStyle = "rgba(255,90,60," + (0.05 + 0.05 * Math.sin(s.t * 18)) + ")";
@@ -815,52 +907,80 @@
 
   /* 弓手：侧视，面朝右 */
   Game.prototype.drawArcher = function (g, x, d, cloak, k) {
-    var p = proj(x, d, 0), sc = p.s * (k || 1), s = this.st;
-    var bodyH = 24 * sc;
-    g.fillStyle = "rgba(0,0,0,0.35)";
-    g.beginPath(); g.ellipse(p.x, p.y + 1, 11 * sc, 3.6 * sc, 0, 0, 6.283); g.fill();
-    // 披风（在背后，即左侧）
-    g.fillStyle = cloak;
-    g.beginPath();
-    g.moveTo(p.x - 3 * sc, p.y - bodyH * 0.85);
-    g.quadraticCurveTo(p.x - 15 * sc, p.y - bodyH * 0.45, p.x - 11 * sc, p.y - 2);
-    g.quadraticCurveTo(p.x - 5 * sc, p.y - 4 * sc, p.x - 3 * sc, p.y - bodyH * 0.45);
-    g.closePath(); g.fill();
-    // 腿
-    g.strokeStyle = "#3b4a55";
-    g.lineWidth = 3 * sc;
-    g.beginPath(); g.moveTo(p.x - 2 * sc, p.y - bodyH * 0.3); g.lineTo(p.x - 5 * sc, p.y); g.stroke();
-    g.beginPath(); g.moveTo(p.x + 2 * sc, p.y - bodyH * 0.3); g.lineTo(p.x + 5 * sc, p.y); g.stroke();
-    // 身体
-    g.fillStyle = "#8a97a3";
-    rr(g, p.x - 6 * sc, p.y - bodyH * 0.88, 12 * sc, bodyH * 0.6, 4 * sc); g.fill();
-    // 头（兜帽）+ 面朝右的脸
-    g.fillStyle = "#c9d4de";
-    g.beginPath(); g.arc(p.x + 1 * sc, p.y - bodyH * 1.0, 5.2 * sc, 0, 6.283); g.fill();
-    g.fillStyle = "#6e7c88";
-    g.beginPath(); g.arc(p.x + 1 * sc, p.y - bodyH * 1.0, 5.2 * sc, Math.PI * 0.75, Math.PI * 1.9); g.fill();
-    g.fillStyle = "#20262c";
-    g.beginPath(); g.arc(p.x + 4 * sc, p.y - bodyH * 1.0, 1.1 * sc, 0, 6.283); g.fill();
-    // 弓：画在箭的真实起点（世界坐标 bowH），保证"箭从弓里射出来"
-    var bowPix = proj(x + 0.022, d, B.CFG.bowH);
-    var bx = bowPix.x, by = bowPix.y;
-    var pull = 3.0 + Math.sin(s.t * 6) * 0.6;
-    g.strokeStyle = "#c9a15f";
-    g.lineWidth = 2.3 * sc;
-    g.beginPath();
-    g.moveTo(bx, by - 10 * sc);
-    g.quadraticCurveTo(bx + 6 * sc, by, bx, by + 10 * sc);
-    g.stroke();
-    g.strokeStyle = "rgba(245,240,225,0.85)";
-    g.lineWidth = 1 * sc;
-    g.beginPath();
-    g.moveTo(bx, by - 10 * sc);
-    g.lineTo(bx - pull * sc, by);
-    g.lineTo(bx, by + 10 * sc);
-    g.stroke();
-    // 前手
-    g.fillStyle = "#c9d4de";
-    g.beginPath(); g.arc(bx - pull * sc, by, 2 * sc, 0, 6.283); g.fill();
+    var p = proj(x, d, 0), s = this.st;
+    var sc = p.s * (k || 1);
+    var sinceShot = s.t - (s.lastShot || -9);
+    var sinceHurt = s.t - (s.lastHurt || -9);
+    var pose = "idle";
+    if (sinceHurt < 0.35) pose = "hit";
+    else if (sinceShot < 0.1) pose = "release";
+    else if (sinceShot < 0.5) pose = "draw";
+    var bob = Math.sin(s.t * 2.2) * 1.6 * sc;
+    var pxScale = 2 * (sc / 1.55);        // 整数倍放大，避免像素糊
+    var drawH = 64 * pxScale, drawW = 64 * pxScale;
+
+    g.save();
+    g.translate(p.x, p.y);
+    // 影子
+    g.fillStyle = "rgba(0,0,0,0.42)";
+    g.beginPath(); g.ellipse(0, 2, drawW * 0.22, drawH * 0.055, 0, 0, 6.283); g.fill();
+
+    // 猎犬（脚边）
+    if (B.has(s, "hound")) {
+      var hx = -drawW * 0.34, hy = 0;
+      g.fillStyle = "#6b5440";
+      g.beginPath(); g.ellipse(hx, hy - 5 * sc, 9 * sc, 4.4 * sc, 0, 0, 6.283); g.fill();
+      g.beginPath(); g.ellipse(hx + 8 * sc, hy - 9 * sc, 5 * sc, 3.8 * sc, -0.3, 0, 6.283); g.fill();
+      g.beginPath(); g.moveTo(hx + 11 * sc, hy - 10 * sc); g.lineTo(hx + 14 * sc, hy - 14 * sc); g.lineTo(hx + 10 * sc, hy - 12 * sc); g.closePath(); g.fill();
+    }
+
+    // 立绘
+    if (heroImg) {
+      var img = (pose === "hit" && heroRed) ? heroRed : heroImg;
+      g.imageSmoothingEnabled = false;
+      g.save();
+      var rot = pose === "draw" ? -0.05 : (pose === "release" ? 0.03 : (pose === "hit" ? -0.16 : 0));
+      var dx = pose === "release" ? 3 * sc : (pose === "hit" ? -4 * sc : 0);
+      g.translate(dx, bob);
+      g.rotate(rot);
+      g.drawImage(img, -drawW * 0.42, -drawH, drawW, drawH);
+      g.restore();
+      g.imageSmoothingEnabled = true;
+    }
+
+    // 猎鹰（肩上）
+    if (B.has(s, "falcon")) {
+      var fy = -drawH * 0.86 + bob;
+      g.fillStyle = "#d9c9a8";
+      g.beginPath(); g.ellipse(-drawW * 0.06, fy, 5 * sc, 3.4 * sc, -0.2, 0, 6.283); g.fill();
+      g.fillStyle = "#b8a88a";
+      g.beginPath();
+      g.moveTo(-drawW * 0.08, fy - 1 * sc);
+      g.quadraticCurveTo(2 * sc, fy - 11 * sc, 9 * sc, fy - 6 * sc);
+      g.quadraticCurveTo(2 * sc, fy - 3 * sc, -drawW * 0.08, fy + 1 * sc);
+      g.closePath(); g.fill();
+      g.fillStyle = "#7a6a52";
+      g.beginPath(); g.arc(drawW * 0.04, fy - 2 * sc, 1.4 * sc, 0, 6.283); g.fill();
+    }
+
+    // 满弓时给一条"弓弦拉紧"的光带（强化发力感）
+    if (pose === "draw") {
+      var bowPix = proj(x + 0.022, d, B.CFG.bowH);
+      g.strokeStyle = "rgba(255,240,200,0.55)";
+      g.lineWidth = 1.6 * sc;
+      g.beginPath();
+      g.moveTo(bowPix.x - p.x - 12 * sc, bowPix.y - p.y);
+      g.lineTo(bowPix.x - p.x + 10 * sc, bowPix.y - p.y);
+      g.stroke();
+    }
+
+    // 受击红圈
+    if (pose === "hit") {
+      g.strokeStyle = "rgba(255,90,70,0.8)";
+      g.lineWidth = 2.4 * sc;
+      g.beginPath(); g.arc(0, -drawH * 0.5, drawW * 0.42, 0, 6.283); g.stroke();
+    }
+    g.restore();
   };
 
   /* 箭：按真实速度方向旋转 + 3 点拖影，看得出是抛物线 */
