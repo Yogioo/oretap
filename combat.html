@@ -31,11 +31,11 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   var CFG = {
     spawnEvery: 2.2,
     maxEnemiesBase: 4,
-    archerX: 0.13,
+    archerX: 0.10,
     archerD: 0.15,
     bowH: 0.365,          // 立绘里弓的高度（箭必须从这里出）
     bowDX: 0.051,         // 弓在人物右侧的偏移
-    range: 0.92,          // 射程：敌人进了射程才自动开火
+    range: 1.05,          // 射程：敌人进了射程才自动开火
     aimH: 0.24,
     autoEvery: 1.15,
     v0: 1.30,
@@ -160,8 +160,8 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
     var d = -0.7 + st.rand() * 1.4;
     var hp = 2 + Math.floor(st.wave * 1.4);
     st.enemies.push({
-      x: 1.34 + st.rand() * 0.06, d: d, hp: hp, maxHp: hp,
-      speed: 0.058 + Math.min(0.030, st.wave * 0.0022),
+      x: 2.02 + st.rand() * 0.08, d: d, hp: hp, maxHp: hp,
+      speed: 0.180 + Math.min(0.060, st.wave * 0.0045),
       atkCd: 1.0, hit: 0, bob: st.rand() * 6.28, slow: 0, stun: 0, anim: st.rand() * 8,
       id: Math.floor(st.rand() * 1e6)
     });
@@ -539,7 +539,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   var FIELD = { x: 0, y: 52, w: W, h: 368 };
   var GROUND = FIELD.y + FIELD.h * 0.90;      // 角色脚底线
   var PAD = 40;
-  var WORLD_W = 1.45;          // 世界横向总宽（屏幕压进 1.45 个世界单位）
+  var WORLD_W = 2.20;          // 世界横向总宽（屏幕压进 1.45 个世界单位）
 
   /* 世界 → 屏幕：x 0..1 横向，d -1..1 走位纵深（屏幕上下），h 离地高度 */
   function proj(x, d, h) {
@@ -821,7 +821,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
 
   /* ---------- 场景：横版洞窟 ---------- */
   Game.prototype.drawScene = function (g, s) {
-    var FLOOR_TOP = GROUND - 118;
+    var FLOOR_TOP = GROUND - 150;
 
     /* 背墙：32x16 硬边砖块 */
     g.fillStyle = "#141a20";
@@ -932,7 +932,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   Game.prototype.drawEnemy = function (g, e, s) {
     var p = proj(e.x, e.d, 0);
     var sc = Math.max(0.62, p.s);
-    var pxScale = 2 * (sc / 1.55);
+    var pxScale = 1.7 * (sc / 1.55);
     var dw = 64 * pxScale, dh = 64 * pxScale;
     var fade = 1 + Math.min(0, e.d) * 0.35;
     g.globalAlpha = Math.max(0.5, fade);
@@ -979,7 +979,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   Game.prototype.drawArcher = function (g, x, d, cloak, k) {
     var p = proj(x, d, 0), s = this.st;
     var sc = p.s * (k || 1);
-    var pxScale = 2 * (sc / 1.55);
+    var pxScale = 1.7 * (sc / 1.55);
     var dw = 64 * pxScale, dh = 64 * pxScale;
     var sinceShot = s.t - (s.lastShot || -9);
     var sinceHurt = s.t - (s.lastHurt || -9);
