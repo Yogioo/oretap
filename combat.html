@@ -29,19 +29,19 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   "use strict";
 
   var CFG = {
-    spawnEvery: 2.2,
-    maxEnemiesBase: 4,
+    spawnEvery: 2.0,
+    maxEnemiesBase: 2,
     archerX: 0.10,
     archerD: 0.15,
     bowH: 0.365,          // 立绘里弓的高度（箭必须从这里出）
     bowDX: 0.051,         // 弓在人物右侧的偏移
-    range: 1.05,          // 射程：敌人进了射程才自动开火
+    range: 1.15,          // 射程：敌人进了射程才自动开火
     aimH: 0.24,
-    autoEvery: 1.15,
-    v0: 1.30,
-    gravity: 4.0,
+    autoEvery: 1.0,
+    v0: 2.20,
+    gravity: 5.0,
     atkBase: 1,
-    hpBase: 12,
+    hpBase: 16,
     hitR: 0.045,
     soulPerKill: 1,
     retreatInvuln: 1.6,
@@ -49,8 +49,8 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
     slackPenalty: 0,          // 箭毯版本：打空不再是惩罚
     landLife: 9.0,            // 插地箭存活 9 秒
     remanCap: 24,             // 场上最多 24 支
-    remanDmgMul: 0.6,         // 被踩到时弹起的箭 = 原伤害 60%
-    remanHopsMax: 2,          // 每支最多触发两次
+    remanDmgMul: 0.60,         // 被踩到时弹起的箭 = 原伤害 60%
+    remanHopsMax: 3,          // 每支最多触发两次
     remanX: 0.075,            // 触发横向范围
     remanD: 0.40              // 触发纵深范围
   };
@@ -147,7 +147,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
     st.fx.push({ t: 1.2, kind: "talent", text: t.nm });
     return true;
   }
-  function maxEnemies(st) { return Math.min(7, CFG.maxEnemiesBase + Math.floor(st.wave / 8)); }
+  function maxEnemies(st) { return Math.min(11, CFG.maxEnemiesBase + Math.floor(st.wave / 2)); }
   function dmgMul(st) {
     var m = 1;
     if (has(st, "totem")) m *= 1.35;
@@ -158,10 +158,10 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
 
   function spawn(st) {
     var d = -0.7 + st.rand() * 1.4;
-    var hp = 2 + Math.floor(st.wave * 1.4);
+    var hp = 2 + Math.floor(st.wave * 0.9);
     st.enemies.push({
-      x: 2.02 + st.rand() * 0.08, d: d, hp: hp, maxHp: hp,
-      speed: 0.180 + Math.min(0.060, st.wave * 0.0045),
+      x: 3.05 + st.rand() * 0.10, d: d, hp: hp, maxHp: hp,
+      speed: 0.360 + Math.min(0.10, st.wave * 0.006),
       atkCd: 1.0, hit: 0, bob: st.rand() * 6.28, slow: 0, stun: 0, anim: st.rand() * 8,
       id: Math.floor(st.rand() * 1e6)
     });
@@ -496,6 +496,12 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
         st.fx.push({ t: 0.35, kind: "spring", x: cga.x, d: cga.d });
       }
     }
+    if (chainThisTick >= 3) {
+      for (var ca = 0; ca < st.arrows.length; ca++) {
+        if (st.arrows[ca].fromGround) st.arrows[ca].dmg = Math.round(st.arrows[ca].dmg * 1.3);
+      }
+      st.fx.push({ t: 0.4, kind: "boom", x: 0.6, d: 0, h: 0.2 });
+    }
     st.chainNow = chainThisTick;
     st.chainPeak = Math.max(st.chainPeak, chainThisTick);
 
@@ -539,7 +545,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   var FIELD = { x: 0, y: 52, w: W, h: 368 };
   var GROUND = FIELD.y + FIELD.h * 0.90;      // 角色脚底线
   var PAD = 40;
-  var WORLD_W = 2.20;          // 世界横向总宽（屏幕压进 1.45 个世界单位）
+  var WORLD_W = 3.20;          // 世界横向总宽（屏幕压进 1.45 个世界单位）
 
   /* 世界 → 屏幕：x 0..1 横向，d -1..1 走位纵深（屏幕上下），h 离地高度 */
   function proj(x, d, h) {
@@ -932,7 +938,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   Game.prototype.drawEnemy = function (g, e, s) {
     var p = proj(e.x, e.d, 0);
     var sc = Math.max(0.62, p.s);
-    var pxScale = 1.7 * (sc / 1.55);
+    var pxScale = 1.12 * (sc / 1.55);
     var dw = 64 * pxScale, dh = 64 * pxScale;
     var fade = 1 + Math.min(0, e.d) * 0.35;
     g.globalAlpha = Math.max(0.5, fade);
@@ -979,7 +985,7 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
   Game.prototype.drawArcher = function (g, x, d, cloak, k) {
     var p = proj(x, d, 0), s = this.st;
     var sc = p.s * (k || 1);
-    var pxScale = 1.7 * (sc / 1.55);
+    var pxScale = 1.12 * (sc / 1.55);
     var dw = 64 * pxScale, dh = 64 * pxScale;
     var sinceShot = s.t - (s.lastShot || -9);
     var sinceHurt = s.t - (s.lastHurt || -9);
@@ -1071,8 +1077,8 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
       for (i = 0; i < ar.trail.length - 1; i++) {
         var t1 = ar.trail[i], t2 = ar.trail[i + 1];
         var p1 = proj(t1.x, t1.d, t1.y), p2 = proj(t2.x, t2.d, t2.y);
-        g.strokeStyle = "rgba(255,240,200," + (0.06 + 0.5 * (i / ar.trail.length)) + ")";
-        g.lineWidth = 0.8 + 2.2 * (i / ar.trail.length);
+        g.strokeStyle = "rgba(255,236,190," + (0.04 + 0.28 * (i / ar.trail.length)) + ")";
+        g.lineWidth = 0.6 + 1.3 * (i / ar.trail.length);
         g.beginPath(); g.moveTo(p1.x, p1.y); g.lineTo(p2.x, p2.y); g.stroke();
       }
     }
@@ -1088,13 +1094,13 @@ window.__PX = {"idle":[{"src":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
     g.translate(p.x, p.y);
     g.rotate(ang);
     var L = 15 * p.s;
-    g.shadowColor = "rgba(255,230,170,0.85)";
-    g.shadowBlur = 6 * p.s;
-    g.strokeStyle = "#f3e8cf";
-    g.lineWidth = Math.max(2, 2.6 * p.s);
+    g.shadowColor = "rgba(255,230,170,0.55)";
+    g.shadowBlur = 4 * p.s;
+    g.strokeStyle = "#f6ecd6";
+    g.lineWidth = Math.max(1.6, 2.0 * p.s);
     g.beginPath(); g.moveTo(-L, 0); g.lineTo(L * 0.35, 0); g.stroke();
-    g.fillStyle = "#fffaf0";
-    g.beginPath(); g.moveTo(L * 0.55, 0); g.lineTo(L * 0.1, -3 * p.s); g.lineTo(L * 0.1, 3 * p.s); g.closePath(); g.fill();
+    g.fillStyle = "#ffffff";
+    g.beginPath(); g.moveTo(L * 0.72, 0); g.lineTo(L * 0.18, -3.4 * p.s); g.lineTo(L * 0.18, 3.4 * p.s); g.closePath(); g.fill();
     g.fillStyle = "#ff7a5a";
     g.beginPath(); g.moveTo(-L, 0); g.lineTo(-L - 5 * p.s, -3.4 * p.s); g.lineTo(-L + 1, 0); g.closePath(); g.fill();
     g.shadowBlur = 0;
